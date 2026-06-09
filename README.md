@@ -1,58 +1,88 @@
 # koishi-plugin-live-monitor
 
-这个 Koishi 插件用于调用 Live Monitor 后端 API，定时检测直播间开播/关播状态，并向指定频道发送提醒。
+[![npm](https://img.shields.io/npm/v/koishi-plugin-live-monitor.svg)](https://www.npmjs.com/package/koishi-plugin-live-monitor)
 
-## 架构
+一个用于检测和推送多平台主播直播状态的 Koishi 插件。它通过与配套的 Python 后端服务协同工作，支持卡片式开播提醒、关播推送、并支持周期性重复提醒。
 
-- Live Monitor 后端：Docker 部署，提供 `/api/check`。
-- Koishi 插件：在 Koishi 控制台配置平台、主播名、直播地址、通知频道，然后轮询后端。
-- 主播列表以 Koishi 插件配置为准，后端不需要手动维护 `URL_config.ini`。
+## 🌟 核心特性
+- **支持超多平台**：支持抖音、B站、快手、虎牙、斗鱼、微博、小红书、TikTok、YouTube、Twitch 等数十个海内外直播平台。
+- **卡片式提醒**：在支持 Puppeteer 的环境下，可生成精美的开播提醒卡片（包含主播头像、直播封面、人气、分区等信息，且已内置防盗链处理，保障图片正常加载）。
+- **去中心化配置**：主播列表完全在 Koishi 插件端配置，无需登录服务器修改后端配置文件。
+- **周期重复推送**：支持正在直播的主播每隔半小时（或自定义时长）重复提醒一次，防止错过精彩瞬间。
+- **高性能轮询**：采用并行抓取机制，极速获取所有主播状态，避免接口超时阻塞。
 
-## 后端配置
+---
 
-后端默认地址：
+## 🛠️ 第一步：部署后端服务 (必须)
 
-```text
-http://127.0.0.1:8000
+该插件必须配合 **Live-Monitor** 后端 API 运行。请先部署后端服务：
+
+- **后端 GitHub 仓库**：[Live-Monitor](https://github.com/lumia1998/Live-Monitor)
+
+### 使用 Docker Compose 部署 (推荐)
+在您的服务器目录中创建一个 `docker-compose.yml` 文件：
+
+```yaml
+version: '3.8'
+
+services:
+  live-monitor:
+    image: ghcr.io/lumia1998/live-monitor:latest
+    container_name: live-monitor
+    environment:
+      - TERM=xterm-256color
+      - TZ=Asia/Shanghai
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    restart: unless-stopped
 ```
 
-## 插件配置
-
-主播列表字段：
-
-| 字段 | 说明 |
-| --- | --- |
-| platform | 平台，下拉选择；选择“自动识别”时后端会根据直播地址判断 |
-| name | 主播展示名，可留空 |
-| url | 直播间地址 |
-| enabled | 是否启用 |
-| channels | 该主播额外通知频道，多个频道用逗号分隔，留空使用默认通知频道 |
-
-插件会调用：
-
-```http
-POST /api/check
+然后运行以下命令启动服务：
+```bash
+docker compose up -d
 ```
+启动后，后端将运行在 `http://<服务器IP>:8000`。
 
-请求体示例：
+---
 
-```json
-{
-  "platform": "抖音直播",
-  "name": "示例主播",
-  "url": "https://live.douyin.com/745964462470",
-  "trigger_push": false
-}
+## 🔌 第二步：安装并配置插件
+
+### 1. 安装插件
+在您的 Koishi 项目目录中运行：
+```bash
+npm install koishi-plugin-live-monitor
 ```
+或者直接在 Koishi 的 **插件市场** 中搜索 `live-monitor` 并一键安装。
 
-## 命令
+### 2. 配置选项
+安装并启用插件后，在控制台的配置界面进行如下配置：
+- **`endpoint`**：Live Monitor 后端 API 地址（例如 `http://127.0.0.1:8000`）。
+- **`pollInterval`**：监控轮询检测间隔（单位：秒，默认 300 秒/5分钟，最小支持 30 秒）。
+- **`liveReminderInterval`**：正在直播中的主播重复推送提醒间隔（单位：分钟，默认 0 表示仅开播推送。设为 30 则代表每半小时提醒一次）。
+- **`notifyChannels`**：默认推送消息的频道 ID 列表。
+- **`rooms` (关注主播列表)**：
+  - **直播间地址 (url)**：直播间的完整 URL（如 `https://live.bilibili.com/320`）。
+  - **平台 (platform)**：选“自动识别”即可，后端会根据 URL 自动判定平台。
+  - **主播展示名 (name)**：可选填，自定义推送卡片上显示的主播名字。
+  - **绑定频道 (channels)**：可选填，只向特定群或频道推送（支持用逗号分隔多个频道）。
 
-```text
-live-monitor.status
-```
+---
 
-`status` 查看当前配置里的直播状态。
+## 🎮 机器人指令
 
-## 注意
+插件注册了以下控制台与聊天命令：
 
-首次轮询只建立状态基线，默认不会对“已经开播”的直播间推送。需要启动时也提醒的话，开启 `notifyOnFirstLive`。
+*   **`live-monitor.list`**：查看当前群/频道可见的直播监控列表及开播状态。
+*   **`live-monitor.status`**：在群内手动发送当前正在直播的主播卡片。
+
+---
+
+## 🔗 相关项目
+
+*   **插件 GitHub 仓库**：[koishi-plugin-live-monitor](https://github.com/lumia1998/koishi-plugin-live-monitor)
+*   **配套后端 GitHub 仓库**：[Live-Monitor](https://github.com/lumia1998/Live-Monitor)
+
+如果您在使用中遇到问题，欢迎前往仓库提出 Issue 或贡献 PR！
