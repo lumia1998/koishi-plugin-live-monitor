@@ -48,6 +48,7 @@ export interface Config {
   notifyOnEnd: boolean
   notifyOnFirstLive: boolean
   requestTimeout: number
+  liveReminderInterval: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -58,6 +59,7 @@ export const Config: Schema<Config> = Schema.object({
   notifyOnStart: Schema.boolean().default(true).description('检测到开播时推送'),
   notifyOnEnd: Schema.boolean().default(false).description('检测到关播时推送'),
   notifyOnFirstLive: Schema.boolean().default(false).description('插件启动后首次检测到已开播也推送'),
+  liveReminderInterval: Schema.number().min(0).default(0).description('正在直播中的主播重复推送提醒间隔（分钟），设为 0 表示不重复推送（仅开/关播时推送）。如设为 30 表示每半小时提醒一次。'),
   rooms: Schema.array(Schema.object({
     platform: platformSchema.description('平台。选自动识别时，后端会根据直播地址判断。'),
     name: Schema.string().description('主播展示名，可留空使用后端解析结果'),
@@ -545,6 +547,7 @@ function formatListItem(status: BackendStatus, index: number) {
 
 export function apply(ctx: Context, config: Config) {
   const previous = new Map<string, boolean>()
+  const lastNotified = new Map<string, number>()
   const defaultChannels = normalizeChannels(config.notifyChannels)
 
   async function requestStatus(room: RoomConfig): Promise<BackendStatus> {
@@ -583,12 +586,35 @@ export function apply(ctx: Context, config: Config) {
       previous.set(key, status.is_live)
 
       if (!manual) {
+        const now = Date.now()
+        const lastTime = lastNotified.get(key) || 0
+        const shouldRemind = config.liveReminderInterval > 0 &&
+                             status.is_live &&
+                             lastTime > 0 &&
+                             (now - lastTime) >= config.liveReminderInterval * 60 * 1000
+
         if (oldState === undefined) {
-          if (status.is_live && config.notifyOnFirstLive) await notify(room, status, true)
-        } else if (!oldState && status.is_live && config.notifyOnStart) {
+          if (status.is_live) {
+            if (config.notifyOnFirstLive) {
+              await notify(room, status, true)
+              lastNotified.set(key, now)
+            } else {
+              lastNotified.set(key, now)
+            }
+          }
+        } else if (!oldState && status.is_live) {
+          if (config.notifyOnStart) {
+            await notify(room, status, true)
+          }
+          lastNotified.set(key, now)
+        } else if (oldState && !status.is_live) {
+          if (config.notifyOnEnd) {
+            await notify(room, status, false)
+          }
+          lastNotified.delete(key)
+        } else if (status.is_live && shouldRemind) {
           await notify(room, status, true)
-        } else if (oldState && !status.is_live && config.notifyOnEnd) {
-          await notify(room, status, false)
+          lastNotified.set(key, now)
         }
       }
 
