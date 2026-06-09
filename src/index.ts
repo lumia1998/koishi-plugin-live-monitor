@@ -30,6 +30,7 @@ const platformOptions = [
 const platformSchema = Schema.union([...platformOptions]).default('自动识别')
 
 type PlatformValue = typeof platformOptions[number]
+type NotificationStyle = '图片卡片' | '纯文字'
 
 export interface RoomConfig {
   platform?: PlatformValue
@@ -50,6 +51,7 @@ export interface Config {
   notifyOnFirstLive: boolean
   requestTimeout: number
   liveReminderInterval: number
+  notificationStyle: NotificationStyle
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -61,6 +63,7 @@ export const Config: Schema<Config> = Schema.object({
   notifyOnEnd: Schema.boolean().default(false).description('检测到关播时推送'),
   notifyOnFirstLive: Schema.boolean().default(false).description('插件启动后首次检测到已开播也推送'),
   liveReminderInterval: Schema.number().min(0).default(0).description('正在直播中的主播重复推送提醒间隔（分钟），设为 0 表示不重复推送（仅开/关播时推送）。如设为 30 表示每半小时提醒一次。'),
+  notificationStyle: Schema.union(['图片卡片', '纯文字'] as const).default('图片卡片').description('通知样式。图片卡片会在同一条消息中发送卡片图片和直播地址；纯文字只发送文本。'),
   rooms: Schema.array(Schema.object({
     platform: platformSchema.description('平台。选自动识别时，后端会根据直播地址判断。'),
     name: Schema.string().description('主播展示名，可留空使用后端解析结果'),
@@ -293,15 +296,14 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean) {
     .card-root {
       width: 860px;
       padding: 18px;
-      background:
-        linear-gradient(135deg, ${theme.accent} 0%, ${theme.accent2} 100%);
+      background: #ffffff;
     }
     .plate {
       width: 100%;
       padding: 14px;
-      background: ${theme.plate};
+      background: #ffffff;
       border-radius: 8px;
-      box-shadow: 0 14px 34px rgba(18, 24, 38, 0.22);
+      box-shadow: 0 10px 28px rgba(18, 24, 38, 0.14);
     }
     .card {
       overflow: hidden;
@@ -572,15 +574,20 @@ export function apply(ctx: Context, config: Config) {
       return
     }
     const message = formatNotification(status, started)
-    const image = await renderLiveCard(ctx, status, started)
     const shouldMentionAll = started && mentionAll && room.mentionAllOnStart === true
     const mentionPrefix = shouldMentionAll ? [h('at', { type: 'all' }), h.text('\n')] : []
+    if (config.notificationStyle === '纯文字') {
+      await ctx.broadcast(channels, shouldMentionAll ? [...mentionPrefix, h.text(message)] : message)
+      return
+    }
+
+    const image = await renderLiveCard(ctx, status, started)
     if (image) {
-      const content = h('message', [...mentionPrefix, h.image(image, 'image/png'), h.text(`\n${status.url}`)])
+      const content = [...mentionPrefix, h.image(image, 'image/png'), h.text(`\n${status.url}`)]
       await ctx.broadcast(channels, content)
       return
     }
-    await ctx.broadcast(channels, shouldMentionAll ? h('message', [...mentionPrefix, h.text(message)]) : message)
+    await ctx.broadcast(channels, shouldMentionAll ? [...mentionPrefix, h.text(message)] : message)
   }
 
   async function checkRoom(room: RoomConfig, manual = false): Promise<BackendStatus | undefined> {
@@ -688,9 +695,13 @@ export function apply(ctx: Context, config: Config) {
       const liveStatuses = statuses.filter(status => status.is_live)
       if (!liveStatuses.length) return '当前群可见的直播间都还没有开播。'
       for (const status of liveStatuses) {
+        if (config.notificationStyle === '纯文字') {
+          await session.send(formatNotification(status, true))
+          continue
+        }
         const image = await renderLiveCard(ctx, status, true)
         if (image) {
-          await session.send(h('message', [h.image(image, 'image/png'), h.text(`\n${status.url}`)]))
+          await session.send([h.image(image, 'image/png'), h.text(`\n${status.url}`)])
         } else {
           await session.send(formatNotification(status, true))
         }
