@@ -113,6 +113,11 @@ interface PlatformTheme {
   ink: string
 }
 
+interface LiveCardImages {
+  cover?: string
+  avatar?: string
+}
+
 const fallbackIcons: Record<string, string> = {
   bilibili: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxZW0iIGhlaWdodD0iMWVtIiB2aWV3Qm94PSIwIDAgMjQgMjQiPgoJPHBhdGggZD0iTTAgMGgyNHYyNEgweiIgZmlsbD0ibm9uZSIgLz4KCTxnIGZpbGw9Im5vbmUiIGZpbGwtcnVsZT0iZXZlbm9kZCI+CgkJPHBhdGggZD0ibTEyLjU5NCAyMy4yNThsLS4wMTIuMDAybC0uMDcxLjAzNWwtLjAyLjAwNGwtLjAxNC0uMDA0bC0uMDcxLS4wMzZxLS4wMTYtLjAwNC0uMDI0LjAwNmwtLjAwNC4wMWwtLjAxNy40MjhsLjAwNS4wMmwuMDEuMDEzbC4xMDQuMDc0bC4wMTUuMDA0bC4wMTItLjAwNGwuMTA0LS4wNzRsLjAxMi0uMDE2bC4wMDQtLjAxN2wtLjAxNy0uNDI3cS0uMDA0LS4wMTYtLjAxNi0uMDE4bS4yNjQtLjExM2wtLjAxNC4wMDJsLS4xODQuMDkzbC0uMDEuMDFsLS4wMDMuMDExbC4wMTguNDNsLjAwNS4wMTJsLjAwOC4wMDhsLjIwMS4wOTJxLjAxOS4wMDUuMDI5LS4wMDhsLjAwNC0uMDE0bC0uMDM0LS42MTRxLS4wMDUtLjAxOS0uMDItLjAyMm0tLjcxNS4wMDJhLjAyLjAyIDAgMCAwLS4wMjcuMDA2bC0uMDA2LjAxNGwtLjAzNC42MTRxLjAwMS4wMTguMDE3LjAyNGwuMDE1LS4wMDJsLjIwMS0uMDkzbC4wMS0uMDA4bC4wMDMtLjAxMWwuMDE4LS40M2wtLjAwMy0uMDEybC0uMDEtLjAxeiIgLz4KCQk8cGF0aCBmaWxsPSJjdXJyZW50Q29sb3IiIGQ9Ik02LjQ0NSAzLjE2OGExIDEgMCAwIDEgMS4zODcuMjc3TDkuNTM1IDZoNC45M2wxLjcwMy0yLjU1NWExIDEgMCAwIDEgMS42NjQgMS4xMUwxNi44NyA2SDE4YTQgNCAwIDAgMSA0IDR2N2E0IDQgMCAwIDEtNCA0SDZhNCA0IDAgMCAxLTQtNHYtN2E0IDQgMCAwIDEgNC00aDEuMTMxbC0uOTYzLTEuNDQ1YTEgMSAwIDAgMSAuMjc3LTEuMzg3TTguOTg2IDhINmEyIDIgMCAwIDAtMiAydjdhMiAyIDAgMCAwIDIgMmgxMmEyIDIgMCAwIDAgMi0ydi03YTIgMiAwIDAgMC0yLTJIOS4wMTZ6TTkgMTFhMSAxIDAgMCAxIDEgMXYyYTEgMSAwIDEgMS0yIDB2LTJhMSAxIDAgMCAxIDEtMW02IDBhMSAxIDAgMCAxIDEgMXYyYTEgMSAwIDEgMS0yIDB2LTJhMSAxIDAgMCAxIDEtMSIgLz4KCTwvZz4KPC9zdmc+Cg==',
   douyin: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxZW0iIGhlaWdodD0iMWVtIiB2aWV3Qm94PSIwIDAgMjQgMjQiPgoJPHBhdGggZD0iTTAgMGgyNHYyNEgweiIgZmlsbD0ibm9uZSIgLz4KCTxwYXRoIGZpbGw9ImN1cnJlbnRDb2xvciIgZD0iTTE2LjYgNS44MnMuNTEuNSAwIDBBNC4yOCA0LjI4IDAgMCAxIDE1LjU0IDNoLTMuMDl2MTIuNGEyLjU5IDIuNTkgMCAwIDEtMi41OSAyLjVjLTEuNDIgMC0yLjYtMS4xNi0yLjYtMi42YzAtMS43MiAxLjY2LTMuMDEgMy4zNy0yLjQ4VjkuNjZjLTMuNDUtLjQ2LTYuNDcgMi4yMi02LjQ3IDUuNjRjMCAzLjMzIDIuNzYgNS43IDUuNjkgNS43YzMuMTQgMCA1LjY5LTIuNTUgNS42OS01LjdWOS4wMWE3LjM1IDcuMzUgMCAwIDAgNC4zIDEuMzhWNy4zcy0xLjg4LjA5LTMuMjQtMS40OCIgLz4KPC9zdmc+Cg==',
@@ -298,25 +303,27 @@ function formatDateTime(value?: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-function buildLiveCardHtml(status: BackendStatus, started: boolean) {
+function buildLiveCardHtml(status: BackendStatus, started: boolean, images: LiveCardImages = {}) {
   const theme = platformTheme(status.platform)
-  const cover = status.cover_url || fallbackCover(status)
-  const avatar = status.avatar_url || fallbackCover(status)
+  const cover = images.cover || fallbackCover(status)
+  const avatar = images.avatar || fallbackCover(status)
   const title = status.title || (started ? '直播间已开播' : '直播间已下播')
   const displayName = status.display_name || status.anchor_name || status.configured_name || status.url
-  const actionText = started ? '开播了' : '下播了'
-  const stateLabel = started ? 'LIVE' : 'END'
-  const stateText = started ? '正在直播' : '直播结束'
+  const stateText = started ? '直播中' : '已下播'
   const viewer = firstPresent(status.viewer_count, status.popularity)
-  const timeText = formatDateTime(status.started_at)
+  const likeCount = firstPresent(status.like_count)
+  const timeText = formatDateTime(status.started_at || status.detected_started_at)
   const durationText = status.live_duration || ''
   const area = status.area_name || status.category
-  const statItems: Array<[string, string]> = []
-  if (viewer !== undefined && viewer !== null && viewer !== '') statItems.push(['人气', formatCount(viewer)])
-  if (area) statItems.push(['分区', area])
-  if (started && durationText) statItems.push(['直播时长', durationText])
-  if (timeText) statItems.push([started ? '开播时间' : '结束时间', timeText])
-  const statsColumnCount = Math.min(Math.max(statItems.length, 1), 4)
+  const statusLineItems: string[] = []
+  if (viewer !== undefined && viewer !== null && viewer !== '') statusLineItems.push(`人气：${formatCount(viewer)}`)
+  if (area) statusLineItems.push(`分区：${area}`)
+  if (likeCount !== undefined && likeCount !== null && likeCount !== '') statusLineItems.push(`点赞：${formatCount(likeCount)}`)
+  const metaLineItems: string[] = []
+  if (started && durationText) metaLineItems.push(`直播时长：${durationText}`)
+  if (timeText) metaLineItems.push(`${started ? '开播时间' : '结束时间'}：${timeText}`)
+  const primaryStats = statusLineItems.join('　')
+  const secondaryStats = metaLineItems.join('　')
 
   return `<!doctype html>
 <html>
@@ -325,32 +332,26 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean) {
   <meta name="referrer" content="no-referrer">
   <style>
     * { box-sizing: border-box; }
-    html, body { margin: 0; width: 860px; min-height: 500px; background: transparent; }
+    html, body { margin: 0; width: 640px; min-height: 360px; background: transparent; }
     body {
       font-family: "Microsoft YaHei", "Noto Sans CJK SC", "PingFang SC", sans-serif;
-      color: ${theme.ink};
+      color: #18191c;
     }
     .card-root {
-      width: 860px;
-      padding: 18px;
+      width: 640px;
+      padding: 12px;
       background: #ffffff;
-    }
-    .plate {
-      width: 100%;
-      padding: 14px;
-      background: #ffffff;
-      border-radius: 8px;
-      box-shadow: 0 10px 28px rgba(18, 24, 38, 0.14);
     }
     .card {
       overflow: hidden;
       background: #ffffff;
       border-radius: 8px;
-      border: 1px solid rgba(20, 24, 32, 0.08);
+      border: 1px solid #e5e7eb;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.10);
     }
     .cover {
       position: relative;
-      height: 276px;
+      height: 245px;
       background: ${theme.plate};
       overflow: hidden;
     }
@@ -360,56 +361,62 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean) {
       object-fit: cover;
       display: block;
     }
-    .cover::after {
-      content: "";
+    .badge {
       position: absolute;
-      inset: 0;
-      background: linear-gradient(180deg, rgba(0,0,0,0.04), rgba(0,0,0,0.42));
-    }
-    .badge-row {
-      position: absolute;
-      left: 18px;
-      right: 18px;
-      top: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      z-index: 2;
-    }
-    .badge, .platform {
-      height: 34px;
+      top: 12px;
+      right: 12px;
+      height: 24px;
       display: inline-flex;
       align-items: center;
-      padding: 0 14px;
+      padding: 0 10px;
       border-radius: 8px;
-      font-size: 17px;
+      color: #ffffff;
+      background: ${started ? theme.accent : '#9ca3af'};
+      font-size: 13px;
       font-weight: 800;
-      color: #fff;
-      background: ${started ? theme.accent : '#59616f'};
-      box-shadow: 0 8px 20px rgba(0,0,0,0.18);
-    }
-    .platform {
-      background: rgba(255,255,255,0.86);
-      color: ${theme.ink};
-      font-weight: 700;
     }
     .body {
-      padding: 20px 22px 22px;
-    }
-    .headline {
       display: grid;
-      grid-template-columns: 70px 1fr;
+      grid-template-columns: minmax(0, 1fr) 150px;
       gap: 16px;
+      padding: 16px 18px 12px;
+    }
+    .main {
+      min-width: 0;
+    }
+    .title {
+      min-height: 58px;
+      max-height: 58px;
+      overflow: hidden;
+      color: #111827;
+      font-size: 24px;
+      line-height: 1.22;
+      font-weight: 900;
+    }
+    .subline {
+      margin-top: 8px;
+      overflow: hidden;
+      color: #6b7280;
+      font-size: 14px;
+      line-height: 1.3;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .streamer {
+      min-width: 0;
+      display: flex;
       align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
     }
     .avatar {
-      width: 70px;
-      height: 70px;
-      border-radius: 8px;
+      width: 44px;
+      height: 44px;
+      flex: none;
       overflow: hidden;
-      background: ${theme.plate};
-      border: 3px solid #fff;
-      box-shadow: 0 8px 18px rgba(24, 30, 42, 0.16);
+      border-radius: 50%;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
     }
     .avatar img {
       width: 100%;
@@ -417,112 +424,140 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean) {
       object-fit: cover;
       display: block;
     }
-    .name-line {
-      display: flex;
-      align-items: baseline;
-      gap: 12px;
-      min-width: 0;
-    }
     .name {
-      max-width: 560px;
+      min-width: 0;
       overflow: hidden;
+      color: #374151;
+      font-size: 13px;
+      line-height: 1.35;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: 30px;
-      line-height: 1.2;
-      font-weight: 800;
     }
-    .action {
-      flex: none;
+    .status {
+      margin-top: 3px;
       color: ${theme.accent};
-      font-size: 24px;
-      font-weight: 800;
-    }
-    .title {
-      margin-top: 7px;
-      max-height: 58px;
-      overflow: hidden;
-      font-size: 21px;
-      line-height: 1.38;
-      color: #4a5568;
+      font-size: 12px;
+      line-height: 1.2;
+      font-weight: 700;
+      text-align: right;
     }
     .stats {
-      display: grid;
-      grid-template-columns: repeat(${statsColumnCount}, 1fr);
-      gap: 10px;
-      margin-top: 20px;
+      padding: 0 18px 15px;
+      color: #4b5563;
+      font-size: 14px;
+      line-height: 1.55;
     }
-    .stat {
-      min-width: 0;
-      padding: 12px 14px;
-      border-radius: 8px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.92), ${theme.plate});
-      border: 1px solid rgba(20, 24, 32, 0.08);
-    }
-    .stat-label {
-      color: #7a8494;
-      font-size: 15px;
-      line-height: 1.2;
-    }
-    .stat-value {
-      margin-top: 5px;
-      min-height: 25px;
+    .stats div {
+      min-height: 22px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      color: ${theme.ink};
-      font-size: 21px;
-      line-height: 1.2;
-      font-weight: 800;
-    }
-    .footer {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      margin-top: 17px;
-      color: #7a8494;
-      font-size: 15px;
-    }
-    .state {
-      color: ${theme.accent};
-      font-weight: 800;
     }
   </style>
 </head>
 <body>
   <div class="card-root">
-    <div class="plate">
-      <div class="card">
-        <div class="cover">
-          <img src="${escapeHtml(cover)}" alt="cover">
-          <div class="badge-row">
-            <div class="badge">${escapeHtml(stateLabel)}</div>
-            <div class="platform">${escapeHtml(status.platform || 'Live Monitor')}</div>
-          </div>
+    <div class="card">
+      <div class="cover">
+        <img src="${escapeHtml(cover)}" alt="cover">
+        <div class="badge">${escapeHtml(stateText)}</div>
+      </div>
+      <div class="body">
+        <div class="main">
+          <div class="title">${escapeHtml(title)}</div>
+          <div class="subline">${escapeHtml(status.platform || 'Live Monitor')}</div>
         </div>
-        <div class="body">
-          <div class="headline">
-            <div class="avatar"><img src="${escapeHtml(avatar)}" alt="avatar"></div>
-            <div>
-              <div class="name-line">
-                <div class="name">${escapeHtml(displayName)}</div>
-                <div class="action">${escapeHtml(actionText)}</div>
-              </div>
-              <div class="title">${escapeHtml(title)}</div>
-            </div>
-          </div>
-          ${statItems.length ? `<div class="stats">
-            ${statItems.map(([label, value]) => `<div class="stat"><div class="stat-label">${escapeHtml(label)}</div><div class="stat-value">${escapeHtml(value)}</div></div>`).join('')}
-          </div>` : ''}
-          <div class="footer">
-            <div class="state">${escapeHtml(stateText)}${timeText ? ` · ${escapeHtml(timeText)}` : ''}</div>
+        <div class="streamer">
+          <div class="avatar"><img src="${escapeHtml(avatar)}" alt="avatar"></div>
+          <div style="min-width: 0;">
+            <div class="name">${escapeHtml(displayName)}</div>
+            <div class="status">${escapeHtml(started ? '正在直播' : '直播结束')}</div>
           </div>
         </div>
       </div>
+      ${primaryStats || secondaryStats ? `<div class="stats">
+        ${primaryStats ? `<div>${escapeHtml(primaryStats)}</div>` : ''}
+        ${secondaryStats ? `<div>${escapeHtml(secondaryStats)}</div>` : ''}
+      </div>` : ''}
     </div>
   </div>
 </body>
 </html>`
+}
+
+async function waitForImages(page: any) {
+  await page.evaluate(() => Promise.race([
+    Promise.all(Array.from(document.images).map((img) => {
+      if ((img as HTMLImageElement).complete) return undefined
+      return new Promise(resolve => {
+        ;(img as HTMLImageElement).onload = resolve
+        ;(img as HTMLImageElement).onerror = resolve
+      })
+    })),
+    new Promise(resolve => setTimeout(resolve, 5000)),
+  ]))
+}
+
+function detectImageMime(buffer: Buffer) {
+  if (buffer.length >= 12 && buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp'
+  if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'image/png'
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg'
+  if (buffer.length >= 3 && buffer.slice(0, 3).toString('ascii') === 'GIF') return 'image/gif'
+  return 'image/jpeg'
+}
+
+function imageReferer(url: string, fallback?: string) {
+  if (fallback) return fallback
+  try {
+    return `${new URL(url).origin}/`
+  } catch {
+    return undefined
+  }
+}
+
+async function fetchImageDataUrl(ctx: Context, url?: string, referer?: string): Promise<string | undefined> {
+  if (!url) return
+  if (url.startsWith('data:')) return url
+  if (!/^https?:\/\//i.test(url)) return url
+
+  try {
+    const data = await ctx.http.get<ArrayBuffer>(url, {
+      responseType: 'arraybuffer',
+      timeout: 8000,
+      headers: {
+        ...(imageReferer(url, referer) ? { Referer: imageReferer(url, referer) } : {}),
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36',
+      },
+    })
+    const buffer = Buffer.from(data)
+    if (!buffer.length) return
+    return `data:${detectImageMime(buffer)};base64,${buffer.toString('base64')}`
+  } catch (error) {
+    ctx.logger('live-monitor').debug(`下载直播卡片图片失败：${url} ${error}`)
+  }
+}
+
+async function captureRoomCover(ctx: Context, page: any, status: BackendStatus): Promise<string | undefined> {
+  if (!status.url) return
+  try {
+    await page.setViewport({ width: 640, height: 360, deviceScaleFactor: 1 })
+    await page.goto(status.url, { waitUntil: 'domcontentloaded', timeout: 8000 })
+    await new Promise(resolve => setTimeout(resolve, 1800))
+    const image = await page.screenshot({
+      type: 'jpeg',
+      quality: 76,
+      clip: { x: 0, y: 0, width: 640, height: 360 },
+    })
+    return `data:image/jpeg;base64,${Buffer.from(image).toString('base64')}`
+  } catch (error) {
+    ctx.logger('live-monitor').debug(`直播间封面缺失，截图兜底失败：${error}`)
+  }
+}
+
+async function prepareLiveCardImages(ctx: Context, page: any, status: BackendStatus): Promise<LiveCardImages> {
+  const avatar = await fetchImageDataUrl(ctx, status.avatar_url, status.url)
+  const cover = await fetchImageDataUrl(ctx, status.cover_url, status.url) || await captureRoomCover(ctx, page, status)
+  return { cover, avatar }
 }
 
 async function renderLiveCard(ctx: Context, status: BackendStatus, started: boolean): Promise<Buffer | undefined> {
@@ -532,18 +567,10 @@ async function renderLiveCard(ctx: Context, status: BackendStatus, started: bool
   let page: any
   try {
     page = await puppeteer.page()
-    await page.setViewport({ width: 860, height: 520, deviceScaleFactor: 2 })
-    await page.setContent(buildLiveCardHtml(status, started), { waitUntil: 'domcontentloaded', timeout: 15000 })
-    await page.evaluate(() => Promise.race([
-      Promise.all(Array.from(document.images).map((img) => {
-        if ((img as HTMLImageElement).complete) return undefined
-        return new Promise(resolve => {
-          ;(img as HTMLImageElement).onload = resolve
-          ;(img as HTMLImageElement).onerror = resolve
-        })
-      })),
-      new Promise(resolve => setTimeout(resolve, 5000)),
-    ]))
+    const images = await prepareLiveCardImages(ctx, page, status)
+    await page.setViewport({ width: 640, height: 430, deviceScaleFactor: 2 })
+    await page.setContent(buildLiveCardHtml(status, started, images), { waitUntil: 'domcontentloaded', timeout: 15000 })
+    await waitForImages(page)
     const element = await page.$('.card-root')
     if (!element) return
     const image = await element.screenshot({ type: 'png' })
