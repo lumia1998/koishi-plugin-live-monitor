@@ -1,7 +1,7 @@
 import { Context, h, Schema } from 'koishi'
 
 export const name = 'live-monitor'
-export const inject = { optional: ['puppeteer'] }
+export const inject = { optional: ['puppeteer', 'database'] }
 
 const platformOptions = [
   '自动识别',
@@ -90,6 +90,9 @@ interface BackendStatus {
   like_count?: number | string | null
   area_name?: string
   started_at?: string
+  detected_started_at?: string
+  live_duration_seconds?: number | null
+  live_duration?: string
   category?: string
   checked_at?: string
   error?: string
@@ -306,12 +309,14 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean) {
   const stateText = started ? '正在直播' : '直播结束'
   const viewer = firstPresent(status.viewer_count, status.popularity)
   const timeText = formatDateTime(status.started_at)
+  const durationText = status.live_duration || ''
   const area = status.area_name || status.category
   const statItems: Array<[string, string]> = []
   if (viewer !== undefined && viewer !== null && viewer !== '') statItems.push(['人气', formatCount(viewer)])
   if (area) statItems.push(['分区', area])
+  if (started && durationText) statItems.push(['直播时长', durationText])
   if (timeText) statItems.push([started ? '开播时间' : '结束时间', timeText])
-  const statsColumnCount = Math.min(Math.max(statItems.length, 1), 3)
+  const statsColumnCount = Math.min(Math.max(statItems.length, 1), 4)
 
   return `<!doctype html>
 <html>
