@@ -11,6 +11,7 @@ export interface RoomConfig {
     url: string;
     enabled?: boolean;
     channels?: string;
+    mentionAllOnStart?: boolean;
 }
 export interface Config {
     endpoint: string;

@@ -37,6 +37,7 @@ export interface RoomConfig {
   url: string
   enabled?: boolean
   channels?: string
+  mentionAllOnStart?: boolean
 }
 
 export interface Config {
@@ -55,7 +56,7 @@ export const Config: Schema<Config> = Schema.object({
   endpoint: Schema.string().default('http://127.0.0.1:8000').description('Live Monitor 后端 API 地址'),
   pollInterval: Schema.number().min(30).default(300).description('轮询间隔，单位秒'),
   requestTimeout: Schema.number().min(3).default(15).description('请求后端超时时间，单位秒'),
-  notifyChannels: Schema.array(String).role('table').default([]).description('默认通知频道 ID。留空时，未单独绑定频道的直播间会向所有已分配频道推送。'),
+  notifyChannels: Schema.array(String).role('table').default([]).description('默认通知频道 ID。留空时不会自动推送，但直播间仍可通过命令查看。'),
   notifyOnStart: Schema.boolean().default(true).description('检测到开播时推送'),
   notifyOnEnd: Schema.boolean().default(false).description('检测到关播时推送'),
   notifyOnFirstLive: Schema.boolean().default(false).description('插件启动后首次检测到已开播也推送'),
@@ -65,7 +66,8 @@ export const Config: Schema<Config> = Schema.object({
     name: Schema.string().description('主播展示名，可留空使用后端解析结果'),
     url: Schema.string().required().description('直播间地址'),
     enabled: Schema.boolean().default(true).description('是否启用监控'),
-    channels: Schema.string().default('').description('绑定频道 ID。多个频道用逗号分隔；留空使用默认通知频道，默认也为空则所有群可见并推送。'),
+    channels: Schema.string().default('').description('绑定频道 ID。多个频道用逗号分隔；留空使用默认通知频道，默认也为空则不自动推送但命令可见。'),
+    mentionAllOnStart: Schema.boolean().default(false).description('开播推送时 @全体成员。只对该行绑定的频道生效；重复提醒不会 @全体。'),
   })).role('table').default([]).description('关注主播列表'),
 })
 
@@ -120,7 +122,7 @@ function trimSlash(value: string) {
 }
 
 function roomKey(room: RoomConfig) {
-  return `${room.platform || ''}|${room.name || ''}|${room.url}`
+  return `${room.platform || ''}|${room.name || ''}|${room.url}|${normalizeChannels(room.channels).join(',')}`
 }
 
 function normalizePlatform(platform?: PlatformValue) {
@@ -550,6 +552,7 @@ export function apply(ctx: Context, config: Config) {
   const previous = new Map<string, boolean>()
   const lastNotified = new Map<string, number>()
   const defaultChannels = normalizeChannels(config.notifyChannels)
+  let checking = false
 
   async function requestStatus(room: RoomConfig): Promise<BackendStatus> {
     return await ctx.http.post(`${trimSlash(config.endpoint)}/api/check`, {
@@ -562,7 +565,7 @@ export function apply(ctx: Context, config: Config) {
     })
   }
 
-  async function notify(room: RoomConfig, status: BackendStatus, started: boolean) {
+  async function notify(room: RoomConfig, status: BackendStatus, started: boolean, mentionAll = false) {
     const channels = expandBroadcastChannels(ctx, effectiveRoomChannels(room, defaultChannels))
     if (!channels.length) {
       ctx.logger('live-monitor').warn(`没有配置有效的通知频道，跳过直播间 ${room.url} 的推送。`)
@@ -570,53 +573,59 @@ export function apply(ctx: Context, config: Config) {
     }
     const message = formatNotification(status, started)
     const image = await renderLiveCard(ctx, status, started)
+    const shouldMentionAll = started && mentionAll && room.mentionAllOnStart === true
+    const mentionPrefix = shouldMentionAll ? [h('at', { type: 'all' }), h.text('\n')] : []
     if (image) {
-      const content = h('message', [h.image(image, 'image/png'), h.text(`\n${status.url}`)])
+      const content = h('message', [...mentionPrefix, h.image(image, 'image/png'), h.text(`\n${status.url}`)])
       await ctx.broadcast(channels, content)
       return
     }
-    await ctx.broadcast(channels, message)
+    await ctx.broadcast(channels, shouldMentionAll ? h('message', [...mentionPrefix, h.text(message)]) : message)
   }
 
   async function checkRoom(room: RoomConfig, manual = false): Promise<BackendStatus | undefined> {
     if (room.enabled === false) return
     try {
       const status = await requestStatus(room)
+      if (manual) return status
+      if (status.error) {
+        ctx.logger('live-monitor').warn(`检测失败，保留直播间 ${room.url} 的上一次状态：${status.error}`)
+        return status
+      }
+
       const key = roomKey(room)
       const oldState = previous.get(key)
       previous.set(key, status.is_live)
 
-      if (!manual) {
-        const now = Date.now()
-        const lastTime = lastNotified.get(key) || 0
-        const shouldRemind = config.liveReminderInterval > 0 &&
-                             status.is_live &&
-                             lastTime > 0 &&
-                             (now - lastTime) >= config.liveReminderInterval * 60 * 1000
+      const now = Date.now()
+      const lastTime = lastNotified.get(key) || 0
+      const shouldRemind = config.liveReminderInterval > 0 &&
+                           status.is_live &&
+                           lastTime > 0 &&
+                           (now - lastTime) >= config.liveReminderInterval * 60 * 1000
 
-        if (oldState === undefined) {
-          if (status.is_live) {
-            if (config.notifyOnFirstLive) {
-              await notify(room, status, true)
-              lastNotified.set(key, now)
-            } else {
-              lastNotified.set(key, now)
-            }
-          }
-        } else if (!oldState && status.is_live) {
-          if (config.notifyOnStart) {
+      if (oldState === undefined) {
+        if (status.is_live) {
+          if (config.notifyOnFirstLive) {
             await notify(room, status, true)
+            lastNotified.set(key, now)
+          } else {
+            lastNotified.set(key, now)
           }
-          lastNotified.set(key, now)
-        } else if (oldState && !status.is_live) {
-          if (config.notifyOnEnd) {
-            await notify(room, status, false)
-          }
-          lastNotified.delete(key)
-        } else if (status.is_live && shouldRemind) {
-          await notify(room, status, true)
-          lastNotified.set(key, now)
         }
+      } else if (!oldState && status.is_live) {
+        if (config.notifyOnStart) {
+          await notify(room, status, true, true)
+        }
+        lastNotified.set(key, now)
+      } else if (oldState && !status.is_live) {
+        if (config.notifyOnEnd) {
+          await notify(room, status, false)
+        }
+        lastNotified.delete(key)
+      } else if (status.is_live && shouldRemind) {
+        await notify(room, status, true)
+        lastNotified.set(key, now)
       }
 
       return status
@@ -638,8 +647,17 @@ export function apply(ctx: Context, config: Config) {
   }
 
   async function checkAll(manual = false) {
+    if (!manual && checking) {
+      ctx.logger('live-monitor').warn('上一次直播状态轮询尚未完成，跳过本轮检查。')
+      return []
+    }
+    if (!manual) checking = true
     const rooms = (config.rooms || []).filter(room => room.enabled !== false && room.url)
-    return checkRooms(rooms, manual)
+    try {
+      return await checkRooms(rooms, manual)
+    } finally {
+      if (!manual) checking = false
+    }
   }
 
   ctx.on('ready', () => {
