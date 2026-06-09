@@ -176,6 +176,38 @@ function expandBroadcastChannels(ctx: Context, channels: string[]) {
   return [...result]
 }
 
+function parseBroadcastChannel(channel: string) {
+  const index = channel.indexOf(':')
+  if (index < 0) return { channelId: channel }
+  return {
+    platform: channel.slice(0, index),
+    channelId: channel.slice(index + 1),
+  }
+}
+
+async function sendToChannels(ctx: Context, channels: string[], content: h.Fragment) {
+  const logger = ctx.logger('live-monitor')
+  const messageIds: string[] = []
+  for (const channel of channels) {
+    const target = parseBroadcastChannel(channel)
+    const bots = target.platform
+      ? ctx.bots.filter(bot => bot.platform === target.platform)
+      : [...ctx.bots]
+    if (!bots.length) {
+      logger.warn(`没有找到可用于频道 ${channel} 的机器人，跳过推送。`)
+      continue
+    }
+    for (const bot of bots) {
+      try {
+        messageIds.push(...await bot.sendMessage(target.channelId, content))
+      } catch (error) {
+        logger.warn(`推送到频道 ${channel} 失败：${error}`)
+      }
+    }
+  }
+  return messageIds
+}
+
 function platformKey(platform = '') {
   const value = platform.toLowerCase()
   if (value.includes('b站') || value.includes('bilibili')) return 'bilibili'
@@ -577,17 +609,17 @@ export function apply(ctx: Context, config: Config) {
     const shouldMentionAll = started && mentionAll && room.mentionAllOnStart === true
     const mentionPrefix = shouldMentionAll ? [h('at', { type: 'all' }), h.text('\n')] : []
     if (config.notificationStyle === '纯文字') {
-      await ctx.broadcast(channels, shouldMentionAll ? [...mentionPrefix, h.text(message)] : message)
+      await sendToChannels(ctx, channels, shouldMentionAll ? [...mentionPrefix, h.text(message)] : message)
       return
     }
 
     const image = await renderLiveCard(ctx, status, started)
     if (image) {
       const content = [...mentionPrefix, h.image(image, 'image/png'), h.text(`\n${status.url}`)]
-      await ctx.broadcast(channels, content)
+      await sendToChannels(ctx, channels, content)
       return
     }
-    await ctx.broadcast(channels, shouldMentionAll ? [...mentionPrefix, h.text(message)] : message)
+    await sendToChannels(ctx, channels, shouldMentionAll ? [...mentionPrefix, h.text(message)] : message)
   }
 
   async function checkRoom(room: RoomConfig, manual = false): Promise<BackendStatus | undefined> {
