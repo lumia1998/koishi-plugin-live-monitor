@@ -215,7 +215,7 @@ function platformTheme(platform = ''): PlatformTheme {
 function generatedPlatformIcon(platform: string, theme: PlatformTheme) {
   const label = (platform || 'LIVE').replace(/直播/g, '').slice(0, 4).toUpperCase()
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270" viewBox="0 0 480 270"><rect width="480" height="270" fill="${theme.plate}"/><rect x="32" y="30" width="416" height="210" rx="24" fill="none" stroke="${theme.accent}" stroke-width="8"/><circle cx="126" cy="135" r="48" fill="${theme.accent}"/><path d="M115 105v60l55-30z" fill="white"/><text x="240" y="148" text-anchor="middle" font-size="44" font-family="Microsoft YaHei, sans-serif" font-weight="700" fill="${theme.ink}">${escapeHtml(label)}</text></svg>`
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`
 }
 
 function fallbackCover(status: BackendStatus) {
@@ -280,6 +280,7 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean) {
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
   <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; width: 860px; min-height: 500px; background: transparent; }
