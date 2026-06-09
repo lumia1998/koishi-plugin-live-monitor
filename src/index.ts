@@ -473,17 +473,10 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean) {
     .footer {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 12px;
+      justify-content: flex-end;
       margin-top: 17px;
       color: #7a8494;
       font-size: 15px;
-    }
-    .url {
-      max-width: 610px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
     .state {
       color: ${theme.accent};
@@ -517,7 +510,6 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean) {
             ${statItems.map(([label, value]) => `<div class="stat"><div class="stat-label">${escapeHtml(label)}</div><div class="stat-value">${escapeHtml(value)}</div></div>`).join('')}
           </div>` : ''}
           <div class="footer">
-            <div class="url">${escapeHtml(status.url)}</div>
             <div class="state">${escapeHtml(stateText)}${timeText ? ` · ${escapeHtml(timeText)}` : ''}</div>
           </div>
         </div>

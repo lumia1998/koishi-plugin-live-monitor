@@ -63,7 +63,7 @@ npm install koishi-plugin-live-monitor
 - **`endpoint`**：Live Monitor 后端 API 地址（例如 `http://127.0.0.1:8000`）。
 - **`pollInterval`**：监控轮询检测间隔（单位：秒，默认 300 秒/5分钟，最小支持 30 秒）。
 - **`liveReminderInterval`**：正在直播中的主播重复推送提醒间隔（单位：分钟，默认 0 表示仅开播推送。设为 30 则代表每半小时提醒一次）。
-- **`notificationStyle`**：通知样式。选择“图片卡片”时会在同一条消息里发送卡片图片和直播地址；选择“纯文字”时只发送文字通知。
+- **`notificationStyle`**：通知样式。选择“图片卡片”时会在同一条消息里发送卡片图片，并在图片外附带直播地址；选择“纯文字”时只发送文字通知。
 - **`notifyChannels`**：默认推送消息的频道 ID 列表；留空时不会自动推送，但群内命令仍可查看直播状态。
 - **`rooms` (关注主播列表)**：
   - **直播间地址 (url)**：直播间的完整 URL（如 `https://live.bilibili.com/320`）。
