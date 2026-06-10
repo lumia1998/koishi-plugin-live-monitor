@@ -18,7 +18,6 @@ export interface Config {
     endpoint: string;
     apiToken: string;
     pollInterval: number;
-    notifyChannels: string[];
     rooms: RoomConfig[];
     notifyOnStart: boolean;
     notifyOnEnd: boolean;

@@ -45,7 +45,6 @@ export interface Config {
   endpoint: string
   apiToken: string
   pollInterval: number
-  notifyChannels: string[]
   rooms: RoomConfig[]
   notifyOnStart: boolean
   notifyOnEnd: boolean
@@ -60,7 +59,6 @@ export const Config: Schema<Config> = Schema.object({
   apiToken: Schema.string().role('secret').default('').description('Live Monitor 后端 API 访问令牌。后端 config.ini 配置 API访问令牌 后，这里填写同一个值。'),
   pollInterval: Schema.number().min(30).default(300).description('轮询间隔，单位秒'),
   requestTimeout: Schema.number().min(3).default(15).description('请求后端超时时间，单位秒'),
-  notifyChannels: Schema.array(String).role('table').default([]).description('默认通知频道 ID。留空时不会自动推送，但直播间仍可通过命令查看。'),
   notifyOnStart: Schema.boolean().default(true).description('检测到开播时推送'),
   notifyOnEnd: Schema.boolean().default(true).description('检测到关播时推送。需要插件运行期间先检测到该主播开播。'),
   notifyOnFirstLive: Schema.boolean().default(false).description('插件启动后首次检测到已开播也推送'),
@@ -71,7 +69,7 @@ export const Config: Schema<Config> = Schema.object({
     name: Schema.string().description('主播展示名，可留空使用后端解析结果'),
     url: Schema.string().required().description('直播间地址'),
     enabled: Schema.boolean().default(true).description('是否启用监控'),
-    channels: Schema.string().default('').description('绑定频道 ID。多个频道用逗号分隔；留空使用默认通知频道，默认也为空则不自动推送但命令可见。'),
+    channels: Schema.string().default('').description('绑定频道 ID。多个频道用逗号分隔；留空时不会自动推送，但仍可通过命令查看。'),
     mentionAllOnStart: Schema.boolean().default(false).description('开播推送时 @全体成员。只对该行绑定的频道生效；重复提醒不会 @全体。'),
   })).role('table').default([]).description('关注主播列表'),
 })
@@ -155,9 +153,8 @@ function normalizeChannels(channels?: string | string[]) {
     .filter(Boolean)
 }
 
-function effectiveRoomChannels(room: RoomConfig, defaultChannels: string[] = []) {
-  const roomChannels = normalizeChannels(room.channels)
-  return roomChannels.length ? roomChannels : defaultChannels
+function effectiveRoomChannels(room: RoomConfig) {
+  return normalizeChannels(room.channels)
 }
 
 function sessionChannelKeys(session?: { platform?: string, channelId?: string, guildId?: string }) {
@@ -171,8 +168,8 @@ function sessionChannelKeys(session?: { platform?: string, channelId?: string, g
   return keys
 }
 
-function roomVisibleInSession(room: RoomConfig, defaultChannels: string[], session?: { platform?: string, channelId?: string, guildId?: string }) {
-  const channels = effectiveRoomChannels(room, defaultChannels)
+function roomVisibleInSession(room: RoomConfig, session?: { platform?: string, channelId?: string, guildId?: string }) {
+  const channels = effectiveRoomChannels(room)
   if (!channels.length) return true
   const keys = sessionChannelKeys(session)
   return channels.some(channel => keys.has(channel) || keys.has(channel.split(':').pop() || channel))
@@ -325,11 +322,10 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean, images: Live
   if (viewer !== undefined && viewer !== null && viewer !== '') statusLineItems.push(`人气：${formatCount(viewer)}`)
   if (area) statusLineItems.push(`分区：${area}`)
   if (likeCount !== undefined && likeCount !== null && likeCount !== '') statusLineItems.push(`点赞：${formatCount(likeCount)}`)
-  const metaLineItems: string[] = []
-  if (started && durationText) metaLineItems.push(`直播时长：${durationText}`)
-  if (timeText) metaLineItems.push(`${started ? '开播时间' : '结束时间'}：${timeText}`)
   const primaryStats = statusLineItems.join('　')
-  const secondaryStats = metaLineItems.join('　')
+  const durationStat = started && durationText ? `直播时长：${durationText}` : ''
+  const timeStat = timeText ? `${started ? '开播时间' : '结束时间'}：${timeText}` : ''
+  const hasStats = primaryStats || durationStat || timeStat
 
   return `<!doctype html>
 <html>
@@ -345,8 +341,8 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean, images: Live
     }
     .card-root {
       width: 640px;
-      padding: 12px;
-      background: #ffffff;
+      padding: 0;
+      background: transparent;
     }
     .card {
       overflow: hidden;
@@ -453,11 +449,27 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean, images: Live
       font-size: 14px;
       line-height: 1.55;
     }
-    .stats div {
+    .primary-stats {
       min-height: 22px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .meta-row {
+      min-height: 22px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+    }
+    .meta-row span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .time-stat {
+      text-align: right;
     }
   </style>
 </head>
@@ -481,9 +493,12 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean, images: Live
           </div>
         </div>
       </div>
-      ${primaryStats || secondaryStats ? `<div class="stats">
-        ${primaryStats ? `<div>${escapeHtml(primaryStats)}</div>` : ''}
-        ${secondaryStats ? `<div>${escapeHtml(secondaryStats)}</div>` : ''}
+      ${hasStats ? `<div class="stats">
+        ${primaryStats ? `<div class="primary-stats">${escapeHtml(primaryStats)}</div>` : ''}
+        ${durationStat || timeStat ? `<div class="meta-row">
+          <span>${escapeHtml(durationStat)}</span>
+          ${timeStat ? `<span class="time-stat">${escapeHtml(timeStat)}</span>` : ''}
+        </div>` : ''}
       </div>` : ''}
     </div>
   </div>
@@ -543,26 +558,9 @@ async function fetchImageDataUrl(ctx: Context, url?: string, referer?: string): 
   }
 }
 
-async function captureRoomCover(ctx: Context, page: any, status: BackendStatus): Promise<string | undefined> {
-  if (!status.url) return
-  try {
-    await page.setViewport({ width: 640, height: 360, deviceScaleFactor: 1 })
-    await page.goto(status.url, { waitUntil: 'domcontentloaded', timeout: 8000 })
-    await new Promise(resolve => setTimeout(resolve, 1800))
-    const image = await page.screenshot({
-      type: 'jpeg',
-      quality: 76,
-      clip: { x: 0, y: 0, width: 640, height: 360 },
-    })
-    return `data:image/jpeg;base64,${Buffer.from(image).toString('base64')}`
-  } catch (error) {
-    ctx.logger('live-monitor').debug(`直播间封面缺失，截图兜底失败：${error}`)
-  }
-}
-
-async function prepareLiveCardImages(ctx: Context, page: any, status: BackendStatus): Promise<LiveCardImages> {
+async function prepareLiveCardImages(ctx: Context, status: BackendStatus): Promise<LiveCardImages> {
   const avatar = await fetchImageDataUrl(ctx, status.avatar_url, status.url)
-  const cover = await fetchImageDataUrl(ctx, status.cover_url, status.url) || await captureRoomCover(ctx, page, status)
+  const cover = await fetchImageDataUrl(ctx, status.cover_url, status.url)
   return { cover, avatar }
 }
 
@@ -572,8 +570,8 @@ async function renderLiveCard(ctx: Context, status: BackendStatus, started: bool
 
   let page: any
   try {
+    const images = await prepareLiveCardImages(ctx, status)
     page = await puppeteer.page()
-    const images = await prepareLiveCardImages(ctx, page, status)
     await page.setViewport({ width: 640, height: 430, deviceScaleFactor: 2 })
     await page.setContent(buildLiveCardHtml(status, started, images), { waitUntil: 'domcontentloaded', timeout: 15000 })
     await waitForImages(page)
@@ -597,26 +595,22 @@ function formatStatus(status: BackendStatus) {
   return `${platform}${status.display_name || status.url}：${state}${title}${error}\n${status.url}`
 }
 
-function formatNotification(status: BackendStatus, started: boolean) {
-  const verb = started ? '开播了' : '下播了'
+function formatNotification(status: BackendStatus, started: boolean, ongoing = false) {
+  const verb = started ? (ongoing ? '正在直播中' : '开播了') : '下播了'
   const platform = status.platform ? `[${status.platform}] ` : ''
   const title = status.title ? `\n标题：${status.title}` : ''
   return `${platform}${status.display_name || status.url} ${verb}${title}\n${status.url}`
 }
 
 function formatListItem(status: BackendStatus, index: number) {
-  const state = status.error ? '检测失败' : status.is_live ? '开播' : '未开播'
-  const platform = status.platform ? `[${status.platform}] ` : ''
-  const title = status.title ? ` - ${status.title}` : ''
-  const error = status.error ? ` - ${status.error}` : ''
-  return `${index + 1}. [${state}] ${platform}${status.display_name || status.url}${title}${error}`
+  const state = status.error ? '检测失败' : status.is_live ? '直播中' : '未开播'
+  const error = status.error ? `：${status.error}` : ''
+  return `${index + 1}. ${status.display_name || status.url} ${state}${error}`
 }
 
 export function apply(ctx: Context, config: Config) {
   const previous = new Map<string, boolean>()
   const lastNotified = new Map<string, number>()
-  const failedEndChecks = new Map<string, number>()
-  const defaultChannels = normalizeChannels(config.notifyChannels)
   let checking = false
 
   function requestOptions() {
@@ -647,13 +641,13 @@ export function apply(ctx: Context, config: Config) {
     return response.rooms || []
   }
 
-  async function notify(room: RoomConfig, status: BackendStatus, started: boolean, mentionAll = false) {
-    const channels = expandBroadcastChannels(ctx, effectiveRoomChannels(room, defaultChannels))
+  async function notify(room: RoomConfig, status: BackendStatus, started: boolean, mentionAll = false, ongoing = false) {
+    const channels = expandBroadcastChannels(ctx, effectiveRoomChannels(room))
     if (!channels.length) {
-      ctx.logger('live-monitor').warn(`没有配置有效的通知频道，跳过直播间 ${room.url} 的推送。`)
+      ctx.logger('live-monitor').debug(`直播间 ${room.url} 未绑定通知频道，跳过自动推送。`)
       return
     }
-    const message = formatNotification(status, started)
+    const message = formatNotification(status, started, ongoing)
     const shouldMentionAll = started && mentionAll && room.mentionAllOnStart === true
     const mentionPrefix = shouldMentionAll ? [h('at', { type: 'all' }), h.text('\n')] : []
     if (config.notificationStyle === '纯文字') {
@@ -674,19 +668,8 @@ export function apply(ctx: Context, config: Config) {
     const key = roomKey(room)
     const oldState = previous.get(key)
     if (status.error) {
-      if (oldState !== true) {
-        ctx.logger('live-monitor').warn(`检测失败，保留直播间 ${room.url} 的上一次状态：${status.error}`)
-        return
-      }
-      const failedEndCount = (failedEndChecks.get(key) || 0) + 1
-      failedEndChecks.set(key, failedEndCount)
-      if (failedEndCount < 2) {
-        ctx.logger('live-monitor').warn(`直播间 ${room.url} 检测异常，等待下一轮确认后再判断是否下播：${status.error}`)
-        return
-      }
-      ctx.logger('live-monitor').warn(`直播间 ${room.url} 连续检测异常且上一次状态为直播中，将按下播处理：${status.error}`)
-    } else {
-      failedEndChecks.delete(key)
+      ctx.logger('live-monitor').warn(`检测失败，保留直播间 ${room.url} 的上一次状态且不触发开/关播变化：${status.error}`)
+      return
     }
     previous.set(key, status.is_live)
 
@@ -716,9 +699,8 @@ export function apply(ctx: Context, config: Config) {
         await notify(room, status, false)
       }
       lastNotified.delete(key)
-      failedEndChecks.delete(key)
     } else if (status.is_live && shouldRemind) {
-      await notify(room, status, true)
+      await notify(room, status, true, false, true)
       lastNotified.set(key, now)
     }
   }
@@ -749,10 +731,14 @@ export function apply(ctx: Context, config: Config) {
     }
   }
 
-  function getEnabledRooms(session?: { platform?: string, channelId?: string, guildId?: string }) {
+  function getAllEnabledRooms() {
     return (config.rooms || [])
       .filter(room => room.enabled !== false && room.url)
-      .filter(room => roomVisibleInSession(room, defaultChannels, session))
+  }
+
+  function getEnabledRooms(session?: { platform?: string, channelId?: string, guildId?: string }) {
+    return getAllEnabledRooms()
+      .filter(room => roomVisibleInSession(room, session))
   }
 
   async function checkAll(manual = false) {
@@ -761,7 +747,7 @@ export function apply(ctx: Context, config: Config) {
       return []
     }
     if (!manual) checking = true
-    const rooms = (config.rooms || []).filter(room => room.enabled !== false && room.url)
+    const rooms = getAllEnabledRooms()
     try {
       return await checkRooms(rooms, manual)
     } finally {
@@ -779,16 +765,17 @@ export function apply(ctx: Context, config: Config) {
     }, config.pollInterval * 1000)
   }
 
-  ctx.command('live-monitor.list', '查看本群可见的直播间列表')
-    .action(async ({ session }) => {
-      const rooms = getEnabledRooms(session)
-      if (!rooms.length) return '当前群没有可见的直播监控项。'
+  ctx.command('live-monitor.list', '查看全部直播间状态列表', { authority: 5 })
+    .action(async () => {
+      const rooms = getAllEnabledRooms()
+      if (!rooms.length) return '没有启用的直播监控项。'
       const statuses = await checkRooms(rooms, true)
       if (!statuses.length) return '没有启用的直播监控项，或后端暂时不可用。'
       return statuses.map(formatListItem).join('\n')
     })
 
   ctx.command('live-monitor.status', '发送本群当前开播直播间卡片')
+    .alias('直播状态')
     .action(async ({ session }) => {
       if (!session) return '只能在会话中使用这个命令。'
       const rooms = getEnabledRooms(session)
@@ -798,14 +785,14 @@ export function apply(ctx: Context, config: Config) {
       if (!liveStatuses.length) return '当前群可见的直播间都还没有开播。'
       for (const status of liveStatuses) {
         if (config.notificationStyle === '纯文字') {
-          await session.send(formatNotification(status, true))
+          await session.send(formatNotification(status, true, true))
           continue
         }
         const image = await renderLiveCard(ctx, status, true)
         if (image) {
           await session.send([h.image(image, 'image/png'), h.text(`\n${status.url}`)])
         } else {
-          await session.send(formatNotification(status, true))
+          await session.send(formatNotification(status, true, true))
         }
       }
     })
