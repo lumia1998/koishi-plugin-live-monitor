@@ -16,6 +16,7 @@ export interface RoomConfig {
 }
 export interface Config {
     endpoint: string;
+    apiToken: string;
     pollInterval: number;
     notifyChannels: string[];
     rooms: RoomConfig[];

@@ -43,6 +43,7 @@ export interface RoomConfig {
 
 export interface Config {
   endpoint: string
+  apiToken: string
   pollInterval: number
   notifyChannels: string[]
   rooms: RoomConfig[]
@@ -56,6 +57,7 @@ export interface Config {
 
 export const Config: Schema<Config> = Schema.object({
   endpoint: Schema.string().default('http://127.0.0.1:8000').description('Live Monitor 后端 API 地址'),
+  apiToken: Schema.string().role('secret').default('').description('Live Monitor 后端 API 访问令牌。后端 config.ini 配置 API访问令牌 后，这里填写同一个值。'),
   pollInterval: Schema.number().min(30).default(300).description('轮询间隔，单位秒'),
   requestTimeout: Schema.number().min(3).default(15).description('请求后端超时时间，单位秒'),
   notifyChannels: Schema.array(String).role('table').default([]).description('默认通知频道 ID。留空时不会自动推送，但直播间仍可通过命令查看。'),
@@ -97,6 +99,10 @@ interface BackendStatus {
   checked_at?: string
   error?: string
   extra?: Record<string, unknown>
+}
+
+interface BatchCheckResponse {
+  rooms?: BackendStatus[]
 }
 
 type PuppeteerContext = Context & {
@@ -609,18 +615,36 @@ function formatListItem(status: BackendStatus, index: number) {
 export function apply(ctx: Context, config: Config) {
   const previous = new Map<string, boolean>()
   const lastNotified = new Map<string, number>()
+  const failedEndChecks = new Map<string, number>()
   const defaultChannels = normalizeChannels(config.notifyChannels)
   let checking = false
 
-  async function requestStatus(room: RoomConfig): Promise<BackendStatus> {
-    return await ctx.http.post(`${trimSlash(config.endpoint)}/api/check`, {
+  function requestOptions() {
+    const token = config.apiToken?.trim()
+    return {
+      timeout: config.requestTimeout * 1000,
+      headers: token ? { 'X-API-Token': token } : undefined,
+    }
+  }
+
+  function requestRoomPayload(room: RoomConfig) {
+    return {
       platform: normalizePlatform(room.platform),
       name: room.name || '',
       url: room.url,
-      trigger_push: false,
-    }, {
-      timeout: config.requestTimeout * 1000,
-    })
+    }
+  }
+
+  async function requestStatus(room: RoomConfig): Promise<BackendStatus> {
+    return await ctx.http.post(`${trimSlash(config.endpoint)}/api/check`, requestRoomPayload(room), requestOptions())
+  }
+
+  async function requestStatuses(rooms: RoomConfig[]): Promise<BackendStatus[]> {
+    if (!rooms.length) return []
+    const response = await ctx.http.post<BatchCheckResponse>(`${trimSlash(config.endpoint)}/api/check/batch`, {
+      rooms: rooms.map(requestRoomPayload),
+    }, requestOptions())
+    return response.rooms || []
   }
 
   async function notify(room: RoomConfig, status: BackendStatus, started: boolean, mentionAll = false) {
@@ -646,51 +670,64 @@ export function apply(ctx: Context, config: Config) {
     await sendToChannels(ctx, channels, shouldMentionAll ? [...mentionPrefix, h.text(message)] : message)
   }
 
+  async function applyStatusTransition(room: RoomConfig, status: BackendStatus): Promise<void> {
+    const key = roomKey(room)
+    const oldState = previous.get(key)
+    if (status.error) {
+      if (oldState !== true) {
+        ctx.logger('live-monitor').warn(`检测失败，保留直播间 ${room.url} 的上一次状态：${status.error}`)
+        return
+      }
+      const failedEndCount = (failedEndChecks.get(key) || 0) + 1
+      failedEndChecks.set(key, failedEndCount)
+      if (failedEndCount < 2) {
+        ctx.logger('live-monitor').warn(`直播间 ${room.url} 检测异常，等待下一轮确认后再判断是否下播：${status.error}`)
+        return
+      }
+      ctx.logger('live-monitor').warn(`直播间 ${room.url} 连续检测异常且上一次状态为直播中，将按下播处理：${status.error}`)
+    } else {
+      failedEndChecks.delete(key)
+    }
+    previous.set(key, status.is_live)
+
+    const now = Date.now()
+    const lastTime = lastNotified.get(key) || 0
+    const shouldRemind = config.liveReminderInterval > 0 &&
+                         status.is_live &&
+                         lastTime > 0 &&
+                         (now - lastTime) >= config.liveReminderInterval * 60 * 1000
+
+    if (oldState === undefined) {
+      if (status.is_live) {
+        if (config.notifyOnFirstLive) {
+          await notify(room, status, true)
+          lastNotified.set(key, now)
+        } else {
+          lastNotified.set(key, now)
+        }
+      }
+    } else if (!oldState && status.is_live) {
+      if (config.notifyOnStart) {
+        await notify(room, status, true, true)
+      }
+      lastNotified.set(key, now)
+    } else if (oldState && !status.is_live) {
+      if (config.notifyOnEnd) {
+        await notify(room, status, false)
+      }
+      lastNotified.delete(key)
+      failedEndChecks.delete(key)
+    } else if (status.is_live && shouldRemind) {
+      await notify(room, status, true)
+      lastNotified.set(key, now)
+    }
+  }
+
   async function checkRoom(room: RoomConfig, manual = false): Promise<BackendStatus | undefined> {
     if (room.enabled === false) return
     try {
       const status = await requestStatus(room)
-      if (manual) return status
-      if (status.error) {
-        ctx.logger('live-monitor').warn(`检测失败，保留直播间 ${room.url} 的上一次状态：${status.error}`)
-        return status
-      }
-
-      const key = roomKey(room)
-      const oldState = previous.get(key)
-      previous.set(key, status.is_live)
-
-      const now = Date.now()
-      const lastTime = lastNotified.get(key) || 0
-      const shouldRemind = config.liveReminderInterval > 0 &&
-                           status.is_live &&
-                           lastTime > 0 &&
-                           (now - lastTime) >= config.liveReminderInterval * 60 * 1000
-
-      if (oldState === undefined) {
-        if (status.is_live) {
-          if (config.notifyOnFirstLive) {
-            await notify(room, status, true)
-            lastNotified.set(key, now)
-          } else {
-            lastNotified.set(key, now)
-          }
-        }
-      } else if (!oldState && status.is_live) {
-        if (config.notifyOnStart) {
-          await notify(room, status, true, true)
-        }
-        lastNotified.set(key, now)
-      } else if (oldState && !status.is_live) {
-        if (config.notifyOnEnd) {
-          await notify(room, status, false)
-        }
-        lastNotified.delete(key)
-      } else if (status.is_live && shouldRemind) {
-        await notify(room, status, true)
-        lastNotified.set(key, now)
-      }
-
+      if (!manual) await applyStatusTransition(room, status)
       return status
     } catch (error) {
       ctx.logger('live-monitor').warn(`检测失败：${room.url} ${error}`)
@@ -698,9 +735,18 @@ export function apply(ctx: Context, config: Config) {
   }
 
   async function checkRooms(rooms: RoomConfig[], manual = false) {
-    const promises = rooms.map(room => checkRoom(room, manual))
-    const results = await Promise.all(promises)
-    return results.filter((status): status is BackendStatus => !!status)
+    try {
+      const results = await requestStatuses(rooms)
+      if (!manual) {
+        await Promise.all(results.map((status, index) => applyStatusTransition(rooms[index], status)))
+      }
+      return results.filter((status): status is BackendStatus => !!status)
+    } catch (error) {
+      ctx.logger('live-monitor').warn(`批量检测失败：${error}`)
+      const promises = rooms.map(room => checkRoom(room, manual))
+      const results = await Promise.all(promises)
+      return results.filter((status): status is BackendStatus => !!status)
+    }
   }
 
   function getEnabledRooms(session?: { platform?: string, channelId?: string, guildId?: string }) {
