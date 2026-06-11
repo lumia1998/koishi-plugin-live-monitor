@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-live-monitor",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Koishi plugin for calling the Live Monitor backend and notifying live status changes.",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

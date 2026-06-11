@@ -137,7 +137,7 @@ function trimSlash(value: string) {
 }
 
 function roomKey(room: RoomConfig) {
-  return `${room.platform || ''}|${room.name || ''}|${room.url}|${normalizeChannels(room.channels).join(',')}`
+  return `${room.platform || ''}\x00${room.name || ''}\x00${room.url}\x00${normalizeChannels(room.channels).join(',')}`
 }
 
 function normalizePlatform(platform?: PlatformValue) {
@@ -278,6 +278,7 @@ function escapeHtml(value: unknown) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
+    .replace(/`/g, '&#96;')
 }
 
 function firstPresent(...values: Array<string | number | null | undefined>) {
@@ -535,12 +536,12 @@ async function waitForImages(page: any) {
   ]))
 }
 
-function detectImageMime(buffer: Buffer) {
+function detectImageMime(buffer: Buffer): string | undefined {
   if (buffer.length >= 12 && buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp'
   if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'image/png'
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg'
   if (buffer.length >= 3 && buffer.slice(0, 3).toString('ascii') === 'GIF') return 'image/gif'
-  return 'image/jpeg'
+  return undefined
 }
 
 function imageReferer(url: string, fallback?: string) {
@@ -568,7 +569,9 @@ async function fetchImageDataUrl(ctx: Context, url?: string, referer?: string): 
     })
     const buffer = Buffer.from(data)
     if (!buffer.length) return
-    return `data:${detectImageMime(buffer)};base64,${buffer.toString('base64')}`
+    const mime = detectImageMime(buffer)
+    if (!mime) return
+    return `data:${mime};base64,${buffer.toString('base64')}`
   } catch (error) {
     ctx.logger('live-monitor').debug(`下载直播卡片图片失败：${url} ${error}`)
   }
@@ -738,14 +741,22 @@ export function apply(ctx: Context, config: Config) {
     try {
       const results = await requestStatuses(rooms)
       if (!manual) {
-        await Promise.all(results.map((status, index) => applyStatusTransition(rooms[index], status)))
+        await Promise.all(results.map(status => {
+          const room = rooms.find(r => r.url === status.url)
+          if (room) {
+            return applyStatusTransition(room, status)
+          }
+        }))
       }
       return results.filter((status): status is BackendStatus => !!status)
     } catch (error) {
       ctx.logger('live-monitor').warn(`批量检测失败：${error}`)
-      const promises = rooms.map(room => checkRoom(room, manual))
-      const results = await Promise.all(promises)
-      return results.filter((status): status is BackendStatus => !!status)
+      const results: BackendStatus[] = []
+      for (const room of rooms) {
+        const status = await checkRoom(room, manual)
+        if (status) results.push(status)
+      }
+      return results
     }
   }
 
