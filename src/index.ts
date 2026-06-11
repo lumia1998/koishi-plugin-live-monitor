@@ -377,6 +377,21 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean, images: Live
       font-size: 13px;
       font-weight: 800;
     }
+    .cover-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .cover-overlay .overlay-text {
+      color: #ffffff;
+      font-size: 38px;
+      font-weight: 900;
+      letter-spacing: 10px;
+      text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+    }
     .body {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 150px;
@@ -479,6 +494,7 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean, images: Live
       <div class="cover">
         <img src="${escapeHtml(cover)}" alt="cover">
         <div class="badge">${escapeHtml(stateText)}</div>
+        ${started ? '' : `<div class="cover-overlay"><span class="overlay-text">已下播</span></div>`}
       </div>
       <div class="body">
         <div class="main">
@@ -596,10 +612,12 @@ function formatStatus(status: BackendStatus) {
 }
 
 function formatNotification(status: BackendStatus, started: boolean, ongoing = false) {
-  const verb = started ? (ongoing ? '正在直播中' : '开播了') : '下播了'
-  const platform = status.platform ? `[${status.platform}] ` : ''
-  const title = status.title ? `\n标题：${status.title}` : ''
-  return `${platform}${status.display_name || status.url} ${verb}${title}\n${status.url}`
+  const name = status.display_name || status.url
+  if (started) {
+    const verb = ongoing ? '正在直播中' : '开播啦'
+    return `${name}${verb}！直播链接: ${status.url}`
+  }
+  return `${name}下播了`
 }
 
 function formatListItem(status: BackendStatus, index: number) {
@@ -657,7 +675,7 @@ export function apply(ctx: Context, config: Config) {
 
     const image = await renderLiveCard(ctx, status, started)
     if (image) {
-      const content = [...mentionPrefix, h.image(image, 'image/png'), h.text(`\n${status.url}`)]
+      const content = [...mentionPrefix, h.image(image, 'image/png'), h.text(message)]
       await sendToChannels(ctx, channels, content)
       return
     }
@@ -741,12 +759,23 @@ export function apply(ctx: Context, config: Config) {
       .filter(room => roomVisibleInSession(room, session))
   }
 
+  function cleanupStaleMaps() {
+    const activeKeys = new Set(getAllEnabledRooms().map(room => roomKey(room)))
+    for (const key of previous.keys()) {
+      if (!activeKeys.has(key)) previous.delete(key)
+    }
+    for (const key of lastNotified.keys()) {
+      if (!activeKeys.has(key)) lastNotified.delete(key)
+    }
+  }
+
   async function checkAll(manual = false) {
     if (!manual && checking) {
       ctx.logger('live-monitor').warn('上一次直播状态轮询尚未完成，跳过本轮检查。')
       return []
     }
     if (!manual) checking = true
+    cleanupStaleMaps()
     const rooms = getAllEnabledRooms()
     try {
       return await checkRooms(rooms, manual)
@@ -790,7 +819,7 @@ export function apply(ctx: Context, config: Config) {
         }
         const image = await renderLiveCard(ctx, status, true)
         if (image) {
-          await session.send([h.image(image, 'image/png'), h.text(`\n${status.url}`)])
+          await session.send([h.image(image, 'image/png'), h.text(formatNotification(status, true, true))])
         } else {
           await session.send(formatNotification(status, true, true))
         }
