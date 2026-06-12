@@ -323,7 +323,7 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean, images: Live
   if (area) statusLineItems.push(`分区：${area}`)
   if (likeCount !== undefined && likeCount !== null && likeCount !== '') statusLineItems.push(`点赞：${formatCount(likeCount)}`)
   const primaryStats = statusLineItems.join('　')
-  const durationStat = started && durationText ? `直播时长：${durationText}` : ''
+  const durationStat = durationText ? `${started ? '直播时长' : '总直播时长'}：${durationText}` : ''
   const timeStat = timeText ? `${started ? '开播时间' : '结束时间'}：${timeText}` : ''
   const hasStats = primaryStats || durationStat || timeStat
 
@@ -595,11 +595,31 @@ function formatStatus(status: BackendStatus) {
   return `${platform}${status.display_name || status.url}：${state}${title}${error}\n${status.url}`
 }
 
+function formatDurationSeconds(seconds: number) {
+  if (seconds < 60) {
+    return '不足1分钟'
+  }
+  let minutes = Math.floor(seconds / 60)
+  const days = Math.floor(minutes / (24 * 60))
+  minutes = minutes % (24 * 60)
+  const hours = Math.floor(minutes / 60)
+  minutes = minutes % 60
+
+  if (days) {
+    return `${days}天${hours}小时`
+  }
+  if (hours) {
+    return `${hours}小时${minutes}分钟`
+  }
+  return `${minutes}分钟`
+}
+
 function formatNotification(status: BackendStatus, started: boolean, ongoing = false) {
   const verb = started ? (ongoing ? '正在直播中' : '开播了') : '下播了'
   const platform = status.platform ? `[${status.platform}] ` : ''
   const title = status.title ? `\n标题：${status.title}` : ''
-  return `${platform}${status.display_name || status.url} ${verb}${title}\n${status.url}`
+  const duration = !started && status.live_duration ? `\n总直播时长：${status.live_duration}` : ''
+  return `${platform}${status.display_name || status.url} ${verb}${title}${duration}\n${status.url}`
 }
 
 function formatListItem(status: BackendStatus, index: number) {
@@ -611,6 +631,7 @@ function formatListItem(status: BackendStatus, index: number) {
 export function apply(ctx: Context, config: Config) {
   const previous = new Map<string, boolean>()
   const lastNotified = new Map<string, number>()
+  const liveStartedAt = new Map<string, number>()
   let checking = false
 
   function requestOptions() {
@@ -674,16 +695,34 @@ export function apply(ctx: Context, config: Config) {
     previous.set(key, status.is_live)
 
     const now = Date.now()
+
+    if (status.is_live && !liveStartedAt.has(key)) {
+      const startedAt = status.detected_started_at
+        ? new Date(status.detected_started_at).getTime()
+        : now
+      liveStartedAt.set(key, startedAt)
+    }
+
     const lastTime = lastNotified.get(key) || 0
     const shouldRemind = config.liveReminderInterval > 0 &&
                          status.is_live &&
                          lastTime > 0 &&
                          (now - lastTime) >= config.liveReminderInterval * 60 * 1000
 
+    const getEnrichedStatus = () => {
+      const startedAt = liveStartedAt.get(key)
+      if (!startedAt) return status
+      const seconds = Math.floor((now - startedAt) / 1000)
+      return {
+        ...status,
+        live_duration: formatDurationSeconds(seconds),
+      }
+    }
+
     if (oldState === undefined) {
       if (status.is_live) {
         if (config.notifyOnFirstLive) {
-          await notify(room, status, true)
+          await notify(room, getEnrichedStatus(), true)
           lastNotified.set(key, now)
         } else {
           lastNotified.set(key, now)
@@ -691,16 +730,17 @@ export function apply(ctx: Context, config: Config) {
       }
     } else if (!oldState && status.is_live) {
       if (config.notifyOnStart) {
-        await notify(room, status, true, true)
+        await notify(room, getEnrichedStatus(), true, true)
       }
       lastNotified.set(key, now)
     } else if (oldState && !status.is_live) {
       if (config.notifyOnEnd) {
-        await notify(room, status, false)
+        await notify(room, getEnrichedStatus(), false)
       }
+      liveStartedAt.delete(key)
       lastNotified.delete(key)
     } else if (status.is_live && shouldRemind) {
-      await notify(room, status, true, false, true)
+      await notify(room, getEnrichedStatus(), true, false, true)
       lastNotified.set(key, now)
     }
   }
@@ -725,6 +765,10 @@ export function apply(ctx: Context, config: Config) {
       return results.filter((status): status is BackendStatus => !!status)
     } catch (error) {
       ctx.logger('live-monitor').warn(`批量检测失败：${error}`)
+      const err = error as any
+      if (!err.response || err.response.status === 401 || err.response.status === 403) {
+        return []
+      }
       const promises = rooms.map(room => checkRoom(room, manual))
       const results = await Promise.all(promises)
       return results.filter((status): status is BackendStatus => !!status)
