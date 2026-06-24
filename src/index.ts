@@ -55,7 +55,7 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  endpoint: Schema.string().default('http://127.0.0.1:8000').description('Live Monitor 后端 API 地址'),
+  endpoint: Schema.string().default('http://127.0.0.1:8000').description('Live Monitor 后端 API 地址。使用前请先部署后端服务，详见 [Live-Monitor 仓库](https://github.com/lumia1998/Live-Monitor)。'),
   apiToken: Schema.string().role('secret').default('').description('Live Monitor 后端 API 访问令牌。后端 config.ini 配置 API访问令牌 后，这里填写同一个值。'),
   pollInterval: Schema.number().min(30).default(300).description('轮询间隔，单位秒'),
   requestTimeout: Schema.number().min(3).default(15).description('请求后端超时时间，单位秒'),
