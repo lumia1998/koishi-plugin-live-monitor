@@ -1,4 +1,14 @@
+import { createHash } from 'node:crypto'
 import { Context, h, Schema } from 'koishi'
+import {
+  buildCalendarStatisticsHtml,
+  buildOverviewStatisticsHtml,
+  buildPeriodStatisticsHtml,
+  getStatisticsRange,
+  LiveMonitorSessionRecord,
+  StatisticsPeriod,
+  summarizeSessions,
+} from './statistics'
 
 export const name = 'live-monitor'
 export const inject = { optional: ['puppeteer', 'database'] }
@@ -32,6 +42,21 @@ const platformSchema = Schema.union([...platformOptions]).default('自动识别'
 type PlatformValue = typeof platformOptions[number]
 type NotificationStyle = '图片卡片' | '纯文字'
 
+interface LiveMonitorState {
+  id: string
+  isLive: boolean
+  liveStartedAt: string
+  lastNotifiedAt: string
+  sessionId: string
+}
+
+declare module 'koishi' {
+  interface Tables {
+    liveMonitorState: LiveMonitorState
+    liveMonitorSession: LiveMonitorSessionRecord
+  }
+}
+
 export interface RoomConfig {
   platform?: PlatformValue
   name?: string
@@ -50,6 +75,7 @@ export interface Config {
   notifyOnEnd: boolean
   notifyOnFirstLive: boolean
   requestTimeout: number
+  offlineConfirmations: number
   liveReminderInterval: number
   notificationStyle: NotificationStyle
 }
@@ -59,8 +85,9 @@ export const Config: Schema<Config> = Schema.object({
   apiToken: Schema.string().role('secret').default('').description('Live Monitor 后端 API 访问令牌。后端 config.ini 配置 API访问令牌 后，这里填写同一个值。'),
   pollInterval: Schema.number().min(30).default(300).description('轮询间隔，单位秒'),
   requestTimeout: Schema.number().min(3).default(15).description('请求后端超时时间，单位秒'),
+  offlineConfirmations: Schema.number().min(1).max(5).step(1).default(2).description('连续检测到未开播多少次后才确认下播。默认 2 次，可避免平台瞬时误判切断直播统计。'),
   notifyOnStart: Schema.boolean().default(true).description('检测到开播时推送'),
-  notifyOnEnd: Schema.boolean().default(true).description('检测到关播时推送。需要插件运行期间先检测到该主播开播。'),
+  notifyOnEnd: Schema.boolean().default(true).description('检测到关播时推送。需要插件此前检测并记录过该主播开播。'),
   notifyOnFirstLive: Schema.boolean().default(false).description('插件启动后首次检测到已开播也推送'),
   liveReminderInterval: Schema.number().min(0).default(30).description('正在直播中的主播重复推送提醒间隔（分钟），默认每 30 分钟提醒一次；设为 0 表示不重复推送（仅开/关播时推送）。'),
   notificationStyle: Schema.union(['图片卡片', '纯文字'] as const).default('图片卡片').description('通知样式。图片卡片会在同一条消息中发送卡片图片和直播地址；纯文字只发送文本。'),
@@ -136,8 +163,14 @@ function trimSlash(value: string) {
   return value.replace(/\/+$/, '')
 }
 
+function normalizeRoomUrl(value: string) {
+  const normalized = trimSlash(value.trim())
+  if (!normalized || normalized.includes('://')) return normalized
+  return `https://${normalized}`
+}
+
 function roomKey(room: RoomConfig) {
-  return `${room.platform || ''}\x00${room.name || ''}\x00${room.url}\x00${normalizeChannels(room.channels).join(',')}`
+  return createHash('sha256').update(normalizeRoomUrl(room.url)).digest('hex')
 }
 
 function normalizePlatform(platform?: PlatformValue) {
@@ -307,7 +340,7 @@ function formatDateTime(value?: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-function buildLiveCardHtml(status: BackendStatus, started: boolean, images: LiveCardImages = {}) {
+export function buildLiveCardHtml(status: BackendStatus, started: boolean, images: LiveCardImages = {}) {
   const theme = platformTheme(status.platform)
   const cover = images.cover || fallbackCover(status)
   const avatar = images.avatar || fallbackCover(status)
@@ -512,7 +545,7 @@ function buildLiveCardHtml(status: BackendStatus, started: boolean, images: Live
     <div class="card">
       <div class="cover${started ? '' : ' offline'}">
         <img src="${escapeHtml(cover)}" alt="cover">
-        <div class="badge">${escapeHtml(stateText)}</div>
+        ${started ? `<div class="badge">${escapeHtml(stateText)}</div>` : ''}
         ${started ? '' : `<div class="cover-overlay">
           <div class="overlay-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -632,6 +665,28 @@ async function renderLiveCard(ctx: Context, status: BackendStatus, started: bool
   }
 }
 
+async function renderStatisticsCard(ctx: Context, html: string): Promise<Buffer | undefined> {
+  const puppeteer = (ctx as PuppeteerContext).puppeteer
+  if (!puppeteer) return
+
+  let page: any
+  try {
+    page = await puppeteer.page()
+    await page.setViewport({ width: 800, height: 1000, deviceScaleFactor: 2 })
+    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    await waitForImages(page)
+    const element = await page.$('.poster')
+    if (!element) return
+    const image = await element.screenshot({ type: 'png' })
+    await element.dispose()
+    return Buffer.from(image)
+  } catch (error) {
+    ctx.logger('live-monitor').warn(`生成直播统计图失败：${error}`)
+  } finally {
+    if (page) await page.close().catch(() => undefined)
+  }
+}
+
 function formatStatus(status: BackendStatus) {
   const state = status.is_live ? '直播中' : '未开播'
   const platform = status.platform ? `[${status.platform}] ` : ''
@@ -680,7 +735,141 @@ export function apply(ctx: Context, config: Config) {
   const lastNotified = new Map<string, number>()
   const liveStartedAt = new Map<string, number>()
   const imageUrlCache = new Map<string, { cover_url?: string; avatar_url?: string }>()
+  const activeSessionIds = new Map<string, string>()
+  const sessionRecords = new Map<string, LiveMonitorSessionRecord>()
+  const offlineCounts = new Map<string, number>()
+  const offlineDetectedAt = new Map<string, number>()
   let checking = false
+  let restorePromise: Promise<void> | undefined
+  let missingDatabaseWarned = false
+
+  ctx.model.extend('liveMonitorState', {
+    id: 'string',
+    isLive: 'boolean',
+    liveStartedAt: 'string',
+    lastNotifiedAt: 'string',
+    sessionId: 'string',
+  }, { primary: 'id' })
+
+  ctx.model.extend('liveMonitorSession', {
+    id: 'string',
+    roomId: 'string',
+    roomUrl: 'text',
+    platform: 'string',
+    displayName: 'string',
+    avatarUrl: 'text',
+    coverUrl: 'text',
+    title: 'text',
+    startedAt: 'string',
+    endedAt: 'string',
+    durationSeconds: 'unsigned',
+    peakViewerCount: 'unsigned',
+    finalLikeCount: 'unsigned',
+    completed: 'boolean',
+  }, { primary: 'id' })
+
+  function parseStoredTime(value: string) {
+    if (!value) return
+    const timestamp = new Date(value).getTime()
+    if (Number.isFinite(timestamp)) return timestamp
+  }
+
+  async function restoreState() {
+    if (!ctx.database) {
+      if (!missingDatabaseWarned) {
+        ctx.logger('live-monitor').warn('未启用数据库，直播时长只保存在内存中，插件重启后会重新计时。')
+        missingDatabaseWarned = true
+      }
+      return
+    }
+    if (!restorePromise) {
+      restorePromise = (async () => {
+        try {
+          const activeKeys = new Set(getAllEnabledRooms().map(room => roomKey(room)))
+          const rows = await ctx.database.get('liveMonitorState', {})
+          const sessions = await ctx.database.get('liveMonitorSession', {})
+          for (const session of sessions) sessionRecords.set(session.id, session)
+          for (const row of rows) {
+            if (!activeKeys.has(row.id)) continue
+            previous.set(row.id, row.isLive)
+            const startedAt = parseStoredTime(row.liveStartedAt)
+            const notifiedAt = parseStoredTime(row.lastNotifiedAt)
+            if (startedAt !== undefined) liveStartedAt.set(row.id, startedAt)
+            if (notifiedAt !== undefined) lastNotified.set(row.id, notifiedAt)
+            if (row.sessionId) activeSessionIds.set(row.id, row.sessionId)
+          }
+          ctx.logger('live-monitor').debug(`已恢复 ${rows.filter(row => activeKeys.has(row.id)).length} 条直播监控状态。`)
+        } catch (error) {
+          ctx.logger('live-monitor').warn(`恢复直播监控状态失败，本次将使用内存计时：${error}`)
+        }
+      })()
+    }
+    await restorePromise
+  }
+
+  async function persistState(key: string) {
+    if (!ctx.database) return
+    const startedAt = liveStartedAt.get(key)
+    const notifiedAt = lastNotified.get(key)
+    const sessionId = activeSessionIds.get(key) || ''
+    try {
+      await ctx.database.upsert('liveMonitorState', [{
+        id: key,
+        isLive: previous.get(key) === true,
+        liveStartedAt: startedAt !== undefined && Number.isFinite(startedAt) ? new Date(startedAt).toISOString() : '',
+        lastNotifiedAt: notifiedAt !== undefined && Number.isFinite(notifiedAt) ? new Date(notifiedAt).toISOString() : '',
+        sessionId,
+      }])
+    } catch (error) {
+      ctx.logger('live-monitor').warn(`保存直播监控状态失败：${error}`)
+    }
+  }
+
+  function numericCount(value: number | string | null | undefined) {
+    const number = Number(value)
+    return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0
+  }
+
+  async function saveLiveSession(
+    key: string,
+    room: RoomConfig,
+    status: BackendStatus,
+    endedAt?: number,
+  ) {
+    if (!ctx.database) return
+    const startedAt = liveStartedAt.get(key)
+    if (startedAt === undefined || !Number.isFinite(startedAt)) return
+
+    let sessionId = activeSessionIds.get(key)
+    if (!sessionId) {
+      sessionId = createHash('sha256').update(`${key}\x00${new Date(startedAt).toISOString()}`).digest('hex')
+      activeSessionIds.set(key, sessionId)
+    }
+    const existing = sessionRecords.get(sessionId)
+    const finishedAt = endedAt ?? Date.now()
+    const record: LiveMonitorSessionRecord = {
+      id: sessionId,
+      roomId: key,
+      roomUrl: normalizeRoomUrl(room.url),
+      platform: status.platform || existing?.platform || normalizePlatform(room.platform),
+      displayName: status.display_name || status.anchor_name || room.name || existing?.displayName || room.url,
+      avatarUrl: status.avatar_url || existing?.avatarUrl || '',
+      coverUrl: status.cover_url || existing?.coverUrl || '',
+      title: status.title || existing?.title || '',
+      startedAt: new Date(startedAt).toISOString(),
+      endedAt: endedAt !== undefined ? new Date(endedAt).toISOString() : '',
+      durationSeconds: Math.max(0, Math.floor((finishedAt - startedAt) / 1000)),
+      peakViewerCount: Math.max(existing?.peakViewerCount || 0, numericCount(status.viewer_count), numericCount(status.popularity)),
+      finalLikeCount: Math.max(existing?.finalLikeCount || 0, numericCount(status.like_count)),
+      completed: endedAt !== undefined,
+    }
+    sessionRecords.set(sessionId, record)
+    try {
+      await ctx.database.upsert('liveMonitorSession', [record])
+    } catch (error) {
+      ctx.logger('live-monitor').warn(`保存直播场次失败：${error}`)
+    }
+  }
 
   function requestOptions() {
     const token = config.apiToken?.trim()
@@ -737,9 +926,29 @@ export function apply(ctx: Context, config: Config) {
     const key = roomKey(room)
     const oldState = previous.get(key)
     if (status.error) {
+      offlineCounts.delete(key)
+      offlineDetectedAt.delete(key)
       ctx.logger('live-monitor').warn(`检测失败，保留直播间 ${room.url} 的上一次状态且不触发开/关播变化：${status.error}`)
       return
     }
+
+    const now = Date.now()
+    if (oldState === true && !status.is_live) {
+      const count = (offlineCounts.get(key) || 0) + 1
+      offlineCounts.set(key, count)
+      if (!offlineDetectedAt.has(key)) offlineDetectedAt.set(key, now)
+      if (count < config.offlineConfirmations) {
+        ctx.logger('live-monitor').debug(`直播间 ${room.url} 第 ${count}/${config.offlineConfirmations} 次检测到未开播，等待再次确认。`)
+        return
+      }
+    } else if (status.is_live) {
+      offlineCounts.delete(key)
+      offlineDetectedAt.delete(key)
+    }
+
+    const transitionAt = oldState === true && !status.is_live
+      ? offlineDetectedAt.get(key) || now
+      : now
     previous.set(key, status.is_live)
 
     if (status.is_live) {
@@ -754,14 +963,15 @@ export function apply(ctx: Context, config: Config) {
       }
     }
 
-    const now = Date.now()
-
     if (status.is_live && !liveStartedAt.has(key)) {
-      const startedAt = status.detected_started_at
+      const detectedStartedAt = status.detected_started_at
         ? new Date(status.detected_started_at).getTime()
         : now
+      const startedAt = Number.isFinite(detectedStartedAt) ? detectedStartedAt : now
       liveStartedAt.set(key, startedAt)
     }
+
+    if (status.is_live) await saveLiveSession(key, room, status)
 
     const lastTime = lastNotified.get(key) || 0
     const shouldRemind = config.liveReminderInterval > 0 &&
@@ -769,10 +979,10 @@ export function apply(ctx: Context, config: Config) {
                          lastTime > 0 &&
                          (now - lastTime) >= config.liveReminderInterval * 60 * 1000
 
-    const getEnrichedStatus = () => {
+    const getEnrichedStatus = (at = now) => {
       const startedAt = liveStartedAt.get(key)
       if (!startedAt) return status
-      const seconds = Math.floor((now - startedAt) / 1000)
+      const seconds = Math.max(0, Math.floor((at - startedAt) / 1000))
       return {
         ...status,
         live_duration: formatDurationSeconds(seconds),
@@ -794,16 +1004,22 @@ export function apply(ctx: Context, config: Config) {
       }
       lastNotified.set(key, now)
     } else if (oldState && !status.is_live) {
+      const enrichedStatus = getEnrichedStatus(transitionAt)
+      await saveLiveSession(key, room, enrichedStatus, transitionAt)
       if (config.notifyOnEnd) {
-        await notify(room, getEnrichedStatus(), false)
+        await notify(room, enrichedStatus, false)
       }
       liveStartedAt.delete(key)
       lastNotified.delete(key)
       imageUrlCache.delete(key)
+      activeSessionIds.delete(key)
+      offlineCounts.delete(key)
+      offlineDetectedAt.delete(key)
     } else if (status.is_live && shouldRemind) {
       await notify(room, getEnrichedStatus(), true, false, true)
       lastNotified.set(key, now)
     }
+    await persistState(key)
   }
 
   async function checkRoom(room: RoomConfig, manual = false): Promise<BackendStatus | undefined> {
@@ -818,11 +1034,12 @@ export function apply(ctx: Context, config: Config) {
   }
 
   async function checkRooms(rooms: RoomConfig[], manual = false) {
+    await restoreState()
     try {
       const results = await requestStatuses(rooms)
       if (!manual) {
         await Promise.all(results.map(status => {
-          const room = rooms.find(r => r.url === status.url)
+          const room = rooms.find(r => normalizeRoomUrl(r.url) === normalizeRoomUrl(status.url))
           if (room) {
             return applyStatusTransition(room, status)
           }
@@ -854,6 +1071,103 @@ export function apply(ctx: Context, config: Config) {
       .filter(room => roomVisibleInSession(room, session))
   }
 
+  function selectStatisticsRoom(
+    name: string | undefined,
+    session?: { platform?: string, channelId?: string, guildId?: string },
+  ): { room?: RoomConfig; error?: string } {
+    const rooms = getEnabledRooms(session)
+    if (!rooms.length) return { error: '当前群没有绑定或可见的直播监控项。' }
+    const query = name?.trim().toLowerCase()
+    if (!query) {
+      if (rooms.length === 1) return { room: rooms[0] }
+      const names = rooms.map(room => room.name || room.url).join('、')
+      return { error: `当前群有多个主播，请指定名称：${names}` }
+    }
+    const matches = rooms.filter(room =>
+      (room.name || '').toLowerCase().includes(query) ||
+      normalizeRoomUrl(room.url).toLowerCase().includes(query),
+    )
+    if (matches.length === 1) return { room: matches[0] }
+    if (!matches.length) return { error: `没有找到主播“${name}”。` }
+    return { error: `匹配到多个主播，请输入更完整的名称。` }
+  }
+
+  async function getRoomSessions(room: RoomConfig) {
+    if (!ctx.database) return []
+    const records = await ctx.database.get('liveMonitorSession', { roomId: roomKey(room) })
+    return records.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+  }
+
+  async function buildStatisticsImage(
+    room: RoomConfig,
+    period: StatisticsPeriod,
+    rangeStart: Date,
+    rangeEnd: Date,
+    calendar?: { year: number; month: number },
+  ) {
+    const sessions = await getRoomSessions(room)
+    const summary = summarizeSessions(sessions, rangeStart, rangeEnd)
+    const latest = sessions[sessions.length - 1]
+    const avatarDataUrl = await fetchImageDataUrl(ctx, latest?.avatarUrl, latest?.roomUrl || room.url)
+    const endLabelDate = new Date(rangeEnd.getTime() - 1)
+    const periodLabel = period === 'day'
+      ? `${rangeStart.getFullYear()}年${rangeStart.getMonth() + 1}月${rangeStart.getDate()}日`
+      : period === 'week'
+        ? `${rangeStart.getMonth() + 1}月${rangeStart.getDate()}日 - ${endLabelDate.getMonth() + 1}月${endLabelDate.getDate()}日`
+        : `${rangeStart.getFullYear()}年${rangeStart.getMonth() + 1}月`
+    const input = {
+      displayName: latest?.displayName || room.name || room.url,
+      platform: latest?.platform || normalizePlatform(room.platform) || '自动识别',
+      avatarDataUrl,
+      periodLabel,
+      summary,
+    }
+    const html = calendar
+      ? buildCalendarStatisticsHtml(input, calendar.year, calendar.month)
+      : buildPeriodStatisticsHtml(input)
+    return {
+      image: await renderStatisticsCard(ctx, html),
+      hasRecords: summary.sessionCount > 0,
+    }
+  }
+
+  async function buildOverviewStatisticsImage(room: RoomConfig) {
+    const sessions = await getRoomSessions(room)
+    const now = new Date()
+    const dayRange = getStatisticsRange('day', now)
+    const weekRange = getStatisticsRange('week', now)
+    const monthRange = getStatisticsRange('month', now)
+    const daySummary = summarizeSessions(sessions, dayRange.start, dayRange.end, now)
+    const weekSummary = summarizeSessions(sessions, weekRange.start, weekRange.end, now)
+    const monthSummary = summarizeSessions(sessions, monthRange.start, monthRange.end, now)
+    const latest = sessions[sessions.length - 1]
+    const avatarDataUrl = await fetchImageDataUrl(ctx, latest?.avatarUrl, latest?.roomUrl || room.url)
+    const input = {
+      displayName: latest?.displayName || room.name || room.url,
+      platform: latest?.platform || normalizePlatform(room.platform) || '自动识别',
+      avatarDataUrl,
+      periodLabel: `${now.getFullYear()}年${now.getMonth() + 1}月`,
+      summary: monthSummary,
+    }
+    return {
+      image: await renderStatisticsCard(ctx, buildOverviewStatisticsHtml(input, daySummary, weekSummary, monthSummary)),
+      hasRecords: monthSummary.sessionCount > 0,
+    }
+  }
+
+  function parseCalendarMonth(value?: string) {
+    if (!value) {
+      const now = new Date()
+      return { year: now.getFullYear(), month: now.getMonth() + 1 }
+    }
+    const match = /^(\d{4})-(\d{1,2})$/.exec(value.trim())
+    if (!match) return
+    const year = Number(match[1])
+    const month = Number(match[2])
+    if (year < 2000 || year > 2100 || month < 1 || month > 12) return
+    return { year, month }
+  }
+
   function cleanupStaleMaps() {
     const activeKeys = new Set(getAllEnabledRooms().map(room => roomKey(room)))
     for (const key of previous.keys()) {
@@ -867,6 +1181,15 @@ export function apply(ctx: Context, config: Config) {
     }
     for (const key of imageUrlCache.keys()) {
       if (!activeKeys.has(key)) imageUrlCache.delete(key)
+    }
+    for (const key of activeSessionIds.keys()) {
+      if (!activeKeys.has(key)) activeSessionIds.delete(key)
+    }
+    for (const key of offlineCounts.keys()) {
+      if (!activeKeys.has(key)) offlineCounts.delete(key)
+    }
+    for (const key of offlineDetectedAt.keys()) {
+      if (!activeKeys.has(key)) offlineDetectedAt.delete(key)
     }
   }
 
@@ -885,8 +1208,9 @@ export function apply(ctx: Context, config: Config) {
     }
   }
 
-  ctx.on('ready', () => {
-    void checkAll(false)
+  ctx.on('ready', async () => {
+    await restoreState()
+    await checkAll(false)
   })
 
   if (config.pollInterval > 0) {
@@ -894,6 +1218,59 @@ export function apply(ctx: Context, config: Config) {
       void checkAll(false)
     }, config.pollInterval * 1000)
   }
+
+  ctx.command('live-monitor.calendar [name:text]', '查看主播的月度直播打卡日历')
+    .alias('直播打卡')
+    .option('month', '-m <month:string> 指定月份，例如 2026-07')
+    .action(async ({ session, options }, name) => {
+      if (!session) return '只能在会话中使用这个命令。'
+      if (!ctx.database) return '直播统计需要启用 Koishi 数据库服务。'
+      if (!(ctx as PuppeteerContext).puppeteer) return '直播打卡图需要启用 puppeteer 服务。'
+      const selected = selectStatisticsRoom(name, session)
+      if (!selected.room) return selected.error
+      const month = parseCalendarMonth(options?.month)
+      if (!month) return '月份格式不正确，请使用 YYYY-MM，例如 2026-07。'
+      const rangeStart = new Date(month.year, month.month - 1, 1)
+      const rangeEnd = new Date(month.year, month.month, 1)
+      const result = await buildStatisticsImage(selected.room, 'month', rangeStart, rangeEnd, month)
+      if (!result.image) return '直播打卡图生成失败，请查看插件日志。'
+      return h.image(result.image, 'image/png')
+    })
+
+  ctx.command('live-monitor.stats [name:text]', '查看主播今日、本周和本月的直播统计')
+    .alias('直播统计')
+    .action(async ({ session }, name) => {
+      if (!session) return '只能在会话中使用这个命令。'
+      if (!ctx.database) return '直播统计需要启用 Koishi 数据库服务。'
+      if (!(ctx as PuppeteerContext).puppeteer) return '直播统计图需要启用 puppeteer 服务。'
+      const selected = selectStatisticsRoom(name, session)
+      if (!selected.room) return selected.error
+      const result = await buildOverviewStatisticsImage(selected.room)
+      if (!result.hasRecords) return '该主播本月还没有直播记录。'
+      if (!result.image) return '直播统计图生成失败，请查看插件日志。'
+      return h.image(result.image, 'image/png')
+    })
+
+  function registerStatisticsCommand(command: string, alias: string, description: string, period: StatisticsPeriod) {
+    ctx.command(`${command} [name:text]`, description)
+      .alias(alias)
+      .action(async ({ session }, name) => {
+        if (!session) return '只能在会话中使用这个命令。'
+        if (!ctx.database) return '直播统计需要启用 Koishi 数据库服务。'
+        if (!(ctx as PuppeteerContext).puppeteer) return '直播统计图需要启用 puppeteer 服务。'
+        const selected = selectStatisticsRoom(name, session)
+        if (!selected.room) return selected.error
+        const range = getStatisticsRange(period)
+        const result = await buildStatisticsImage(selected.room, period, range.start, range.end)
+        if (!result.hasRecords) return '该主播在这个时间范围内还没有直播记录。'
+        if (!result.image) return '直播统计图生成失败，请查看插件日志。'
+        return h.image(result.image, 'image/png')
+      })
+  }
+
+  registerStatisticsCommand('live-monitor.stats.day', '日直播统计', '查看主播今日直播统计', 'day')
+  registerStatisticsCommand('live-monitor.stats.week', '周直播统计', '查看主播本周直播统计', 'week')
+  registerStatisticsCommand('live-monitor.stats.month', '月直播统计', '查看主播本月直播统计', 'month')
 
   ctx.command('live-monitor.list', '查看全部直播间状态列表', { authority: 5 })
     .action(async () => {

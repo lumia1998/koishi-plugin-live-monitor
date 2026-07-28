@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-live-monitor",
-  "version": "0.1.16",
+  "version": "0.2.0-alpha.1",
   "description": "多平台直播开播/下播检测与推送插件，支持抖音、B站、YouTube、Twitch 等主流平台，需配合 Live-Monitor 后端服务使用。",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.js",
     "prepack": "npm run build"
   },
   "repository": {
