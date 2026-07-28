@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
+import { join } from 'node:path'
 import { Context, h, Schema } from 'koishi'
+import { AvatarCache } from './avatar-cache'
 import {
   buildCalendarStatisticsHtml,
   buildOverviewStatisticsHtml,
@@ -739,6 +741,7 @@ export function apply(ctx: Context, config: Config) {
   const sessionRecords = new Map<string, LiveMonitorSessionRecord>()
   const offlineCounts = new Map<string, number>()
   const offlineDetectedAt = new Map<string, number>()
+  const avatarCache = new AvatarCache(join(ctx.baseDir || process.cwd(), 'data', 'live-monitor', 'avatars'))
   let checking = false
   let restorePromise: Promise<void> | undefined
   let missingDatabaseWarned = false
@@ -871,6 +874,10 @@ export function apply(ctx: Context, config: Config) {
     }
   }
 
+  async function getCachedAvatar(key: string, avatarUrl?: string, referer?: string) {
+    return avatarCache.get(key, avatarUrl, url => fetchImageDataUrl(ctx, url, referer))
+  }
+
   function requestOptions() {
     const token = config.apiToken?.trim()
     return {
@@ -955,6 +962,7 @@ export function apply(ctx: Context, config: Config) {
       if (status.cover_url || status.avatar_url) {
         imageUrlCache.set(key, { cover_url: status.cover_url, avatar_url: status.avatar_url })
       }
+      if (status.avatar_url) await getCachedAvatar(key, status.avatar_url, status.url)
     } else {
       const cached = imageUrlCache.get(key)
       if (cached) {
@@ -1108,7 +1116,7 @@ export function apply(ctx: Context, config: Config) {
     const sessions = await getRoomSessions(room)
     const summary = summarizeSessions(sessions, rangeStart, rangeEnd)
     const latest = sessions[sessions.length - 1]
-    const avatarDataUrl = await fetchImageDataUrl(ctx, latest?.avatarUrl, latest?.roomUrl || room.url)
+    const avatarDataUrl = await getCachedAvatar(roomKey(room), latest?.avatarUrl, latest?.roomUrl || room.url)
     const endLabelDate = new Date(rangeEnd.getTime() - 1)
     const periodLabel = period === 'day'
       ? `${rangeStart.getFullYear()}年${rangeStart.getMonth() + 1}月${rangeStart.getDate()}日`
@@ -1141,7 +1149,7 @@ export function apply(ctx: Context, config: Config) {
     const weekSummary = summarizeSessions(sessions, weekRange.start, weekRange.end, now)
     const monthSummary = summarizeSessions(sessions, monthRange.start, monthRange.end, now)
     const latest = sessions[sessions.length - 1]
-    const avatarDataUrl = await fetchImageDataUrl(ctx, latest?.avatarUrl, latest?.roomUrl || room.url)
+    const avatarDataUrl = await getCachedAvatar(roomKey(room), latest?.avatarUrl, latest?.roomUrl || room.url)
     const input = {
       displayName: latest?.displayName || room.name || room.url,
       platform: latest?.platform || normalizePlatform(room.platform) || '自动识别',
