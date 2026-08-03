@@ -13,7 +13,10 @@ import {
 } from './statistics'
 
 export const name = 'live-monitor'
-export const inject = { optional: ['puppeteer', 'database'] }
+export const inject = {
+  required: ['database'],
+  optional: ['puppeteer'],
+}
 
 const platformOptions = [
   '自动识别',
