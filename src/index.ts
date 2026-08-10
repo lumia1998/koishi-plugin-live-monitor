@@ -1113,10 +1113,47 @@ export function apply(ctx: Context, config: Config) {
     return { error: `匹配到多个主播，请输入更完整的名称。` }
   }
 
-  async function getRoomSessions(room: RoomConfig) {
+  async function getRoomSessions(room: RoomConfig): Promise<LiveMonitorSessionRecord[]> {
+    // 优先从后端 SQLite 拉取场次记录（后端常驻，重启不丢）
+    const backend = await fetchSessionsFromBackend(room)
+    if (backend.length) return backend
+    // 后端无数据（尚未记录或历史数据）时，fallback 到本地表
     if (!ctx.database) return []
     const records = await ctx.database.get('liveMonitorSession', { roomId: roomKey(room) })
     return records.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+  }
+
+  async function fetchSessionsFromBackend(room: RoomConfig): Promise<LiveMonitorSessionRecord[]> {
+    const token = config.apiToken?.trim()
+    try {
+      const response = await ctx.http.get<{ sessions?: Array<Record<string, unknown>> }>(
+        `${trimSlash(config.endpoint)}/api/sessions?limit=5000`,
+        token ? { headers: { 'X-API-Token': token } } : undefined,
+      )
+      const targetUrl = normalizeRoomUrl(room.url)
+      return (response.sessions || [])
+        .filter(source => normalizeRoomUrl(String(source.room_url || '')) === targetUrl)
+        .map(source => ({
+          id: String(source.id),
+          roomId: String(source.room_id),
+          roomUrl: String(source.room_url || ''),
+          platform: String(source.platform || ''),
+          displayName: String(source.display_name || ''),
+          avatarUrl: String(source.avatar_url || ''),
+          coverUrl: String(source.cover_url || ''),
+          title: String(source.title || ''),
+          startedAt: String(source.started_at || ''),
+          endedAt: String(source.ended_at || ''),
+          durationSeconds: Number(source.duration_seconds || 0),
+          peakViewerCount: Number(source.peak_viewer_count || 0),
+          finalLikeCount: Number(source.final_like_count || 0),
+          completed: Boolean(source.completed),
+        }))
+        .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+    } catch (error) {
+      ctx.logger('live-monitor').warn(`从后端拉取场次记录失败，回退本地数据：${error instanceof Error ? error.message : error}`)
+      return []
+    }
   }
 
   async function buildStatisticsImage(
