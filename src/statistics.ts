@@ -1,5 +1,8 @@
 export type StatisticsPeriod = 'day' | 'week' | 'month'
 
+/** 未完成场次统计时允许外推的最长单场直播时长（小时），防止异常数据无限拉长统计 */
+export const MAX_LIVE_SESSION_HOURS = 24
+
 export interface LiveMonitorSessionRecord {
   id: string
   roomId: string
@@ -92,7 +95,17 @@ export function getStatisticsRange(period: StatisticsPeriod, now = new Date()) {
 
 function parseSessionTimes(session: LiveMonitorSessionRecord, now: Date) {
   const startedAt = new Date(session.startedAt)
-  const endedAt = session.completed && session.endedAt ? new Date(session.endedAt) : now
+  let endedAt: Date
+  if (session.completed && session.endedAt) {
+    endedAt = new Date(session.endedAt)
+  } else {
+    // 未完成场次：正常情况下是"正在进行"，用 now 作为临时结束点。
+    // 但若场次开始时间距今过久（数据异常/崩溃遗留），会无限拉长统计，
+    // 这里按"最长单场直播"上限截断，避免污染统计。
+    const maxLiveHours = MAX_LIVE_SESSION_HOURS
+    const cappedAt = new Date(startedAt.getTime() + maxLiveHours * 3600 * 1000)
+    endedAt = now < cappedAt ? now : cappedAt
+  }
   if (!Number.isFinite(startedAt.getTime()) || !Number.isFinite(endedAt.getTime())) return
   if (endedAt <= startedAt) return
   return { startedAt, endedAt }

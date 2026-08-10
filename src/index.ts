@@ -794,7 +794,17 @@ export function apply(ctx: Context, config: Config) {
           const activeKeys = new Set(getAllEnabledRooms().map(room => roomKey(room)))
           const rows = await ctx.database.get('liveMonitorState', {})
           const sessions = await ctx.database.get('liveMonitorSession', {})
-          for (const session of sessions) sessionRecords.set(session.id, session)
+          for (const session of sessions) {
+            sessionRecords.set(session.id, session)
+            // 以数据库为真相源：未完成（completed=0）的场次视为仍在直播，
+            // 恢复其状态，避免崩溃/重启后下播分支不触发导致场次永不收尾。
+            if (session.completed) continue
+            if (!activeKeys.has(session.roomId)) continue
+            if (!previous.has(session.roomId)) previous.set(session.roomId, true)
+            const startedAt = parseStoredTime(session.startedAt)
+            if (startedAt !== undefined && !liveStartedAt.has(session.roomId)) liveStartedAt.set(session.roomId, startedAt)
+            if (session.id && !activeSessionIds.has(session.roomId)) activeSessionIds.set(session.roomId, session.id)
+          }
           for (const row of rows) {
             if (!activeKeys.has(row.id)) continue
             previous.set(row.id, row.isLive)
@@ -804,7 +814,7 @@ export function apply(ctx: Context, config: Config) {
             if (notifiedAt !== undefined) lastNotified.set(row.id, notifiedAt)
             if (row.sessionId) activeSessionIds.set(row.id, row.sessionId)
           }
-          ctx.logger('live-monitor').debug(`已恢复 ${rows.filter(row => activeKeys.has(row.id)).length} 条直播监控状态。`)
+          ctx.logger('live-monitor').debug(`已恢复 ${rows.filter(row => activeKeys.has(row.id)).length} 条直播监控状态，${sessions.filter(s => !s.completed && activeKeys.has(s.roomId)).length} 条未完成场次。`)
         } catch (error) {
           ctx.logger('live-monitor').warn(`恢复直播监控状态失败，本次将使用内存计时：${error}`)
         }

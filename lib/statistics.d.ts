@@ -1,4 +1,6 @@
 export type StatisticsPeriod = 'day' | 'week' | 'month';
+/** 未完成场次统计时允许外推的最长单场直播时长（小时），防止异常数据无限拉长统计 */
+export declare const MAX_LIVE_SESSION_HOURS = 24;
 export interface LiveMonitorSessionRecord {
     id: string;
     roomId: string;
